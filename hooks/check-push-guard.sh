@@ -1,20 +1,20 @@
 #!/bin/bash
 # Push Guard: block git push via Claude Bash tool until pre-push-review skill completes.
 #
-# Reads CLAUDE_TOOL_INPUT (JSON) to extract the bash command.
-# Exits 2 (block) if git push detected and review marker is absent/stale.
+# Hook input arrives via stdin as JSON: {"tool_name":"Bash","tool_input":{"command":"..."}}
+# Exits 2 (block) if git push detected and review marker is absent.
 
 MARKER="/tmp/pre-push-review-done"
 
-# Extract command from tool input JSON
+# Extract command from stdin JSON
 COMMAND=$(python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    print(d.get('command', ''))
+    print(d.get('tool_input', {}).get('command', ''))
 except Exception:
     print('')
-" <<< "$CLAUDE_TOOL_INPUT" 2>/dev/null)
+" 2>/dev/null)
 
 # Check if this is a real git push (ignore --help / --dry-run / -n)
 if echo "$COMMAND" | grep -qE 'git\s+push' && \
@@ -26,13 +26,13 @@ if echo "$COMMAND" | grep -qE 'git\s+push' && \
     fi
 
     echo ""
-    echo "🚫 Push blocked: pre-push review not completed (or expired)."
+    echo "🚫 Push blocked: pre-push review not completed."
     echo ""
     echo "Run the review skill first:"
     echo "  push-guard:pre-push-review"
     echo ""
     echo "The skill will scan modified code across 4 safety dimensions."
-    echo "Push unblocks automatically for 30 min after skill completes."
+    echo "Push unblocks automatically after skill completes (single-use token)."
     echo ""
     exit 2
 fi
