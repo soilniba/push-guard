@@ -16,11 +16,15 @@ Automatically blocks `git push` (executed via Claude's Bash tool) until a system
 ## How It Works
 
 1. `PreToolUse` hook intercepts every Bash tool call
-2. If the command contains `git push`, checks for `/tmp/pre-push-review-done`
-3. If marker absent → **blocks push**, prompts to run skill
-4. Run `push-guard:pre-push-review` → skill guides 4-dimension scan
-5. Skill creates marker on completion → hook consumes (deletes) it on next push
-6. **Every push requires its own review** — the token is single-use
+2. If the command contains `git push`, the hook parses the refspec to identify the local ref being pushed and resolves it to a commit SHA
+3. The hook reads `/tmp/pre-push-review-done`. If absent **or** if its content does not equal the target ref's SHA → **blocks push**, prompts to run skill
+4. Run `push-guard:pre-push-review` → skill guides the dimension-by-dimension scan, then writes the HEAD SHA into the marker via `git rev-parse HEAD > /tmp/pre-push-review-done`
+5. Hook consumes (deletes) the marker on every check
+6. **Every push requires its own review** — the token is single-use, and amending or adding new commits invalidates the marker (SHA changes), forcing a fresh review
+
+### Why content-validated?
+
+Earlier versions used file-existence as the gate, which a bare `touch /tmp/pre-push-review-done` could bypass — including accidental cases where the marker-creation command was chained (`touch ... && git push`) in a single Bash call, producing no real review window. Tying the marker to the HEAD SHA closes that loop: the marker can only be produced from inside the working tree, after the commit being pushed exists, and is invalidated the moment HEAD moves.
 
 ## Install
 

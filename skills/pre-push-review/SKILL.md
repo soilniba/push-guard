@@ -120,12 +120,12 @@ All tests must pass before unblocking push.
 
 ### Step 5: Unblock Push
 
-The token is **single-use**: the hook deletes it the moment push is allowed. Every push requires its own review.
+The token is **single-use** *and* **content-validated**: the marker file must contain the SHA of the commit being pushed (HEAD). The hook reads the marker, compares its content to the SHA of the ref being pushed, and deletes the marker on every check (pass or fail). A bare `touch` will NOT bypass — empty content fails the check.
 
 **Case A — All dimensions CLEAN (no bugs found):**
 
 ```bash
-touch /tmp/pre-push-review-done
+git rev-parse HEAD > /tmp/pre-push-review-done
 ```
 
 **Case B — Some dimensions FIXED (bugs found and fixed, tests pass):**
@@ -133,7 +133,7 @@ touch /tmp/pre-push-review-done
 Confirm all fixes are complete and tests are green, then:
 
 ```bash
-touch /tmp/pre-push-review-done
+git rev-parse HEAD > /tmp/pre-push-review-done
 ```
 
 **Case C — Issues found but user decides not to fix now:**
@@ -144,6 +144,24 @@ Stop. Ask the user explicitly:
 
 Only create the token after the user explicitly says it's acceptable to push as-is.
 
+#### CRITICAL: Standalone Invocation Required
+
+The marker-writing command **MUST be its own Bash tool call**. Do NOT combine it with `git add`, `git commit`, `git push`, or any other command in the same Bash invocation.
+
+❌ **Forbidden** (defeats the safety boundary — marker is created and consumed in one call, the user has no chance to interrupt):
+```bash
+git rev-parse HEAD > /tmp/pre-push-review-done && git push origin main
+git add . && git commit -m "x" && git rev-parse HEAD > /tmp/pre-push-review-done && git push
+```
+
+✅ **Required** — separate Bash calls, in this order:
+1. (Earlier) `git add` / `git commit` to produce the commit being reviewed
+2. Run the 4-dimension scan against the resulting HEAD
+3. **Standalone:** `git rev-parse HEAD > /tmp/pre-push-review-done`
+4. **Standalone:** `git push ...`
+
+If the user amends the commit or adds new commits after step 3, the marker SHA no longer matches HEAD and the hook will correctly re-block — re-run the skill.
+
 ---
 
 ## Red Flags
@@ -152,5 +170,7 @@ Only create the token after the user explicitly says it's acceptable to push as-
 - Mark CLEAN without reading the actual modified code
 - Skip Dimension 1 because "it looks simple" — exception paths hide in simple code
 - Skip Dimension 5 — even "obviously safe" commits have accidentally included tokens in test fixtures or config examples
-- Call `touch /tmp/pre-push-review-done` before tests pass after a fix
+- Write the marker before tests pass after a fix
 - Scan only the last commit when the branch has multiple commits (Step 1 uses merge-base)
+- Combine the marker-writing command with `git add` / `git commit` / `git push` / any other command in a single Bash call — must be standalone (see Step 5)
+- Try to bypass the hook with bare `touch /tmp/pre-push-review-done` — the marker is now content-validated against the HEAD SHA
