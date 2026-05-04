@@ -46,22 +46,23 @@ GIT_OPTS_WITH_VALUE = {'-C', '-c', '--git-dir', '--work-tree', '--namespace',
 # Shell metacharacters and redirection operators that end the current command's
 # args. shlex.split treats these as separate tokens but does NOT understand them
 # as shell operators, so without this filter `git push 2>&1 | tail` would have
-# `|` appended to push_args and parsed as a refspec — see issue: false-positive
-# block on `git push ... 2>&1 | tail`.
-_FIXED_BOUNDARIES = {'|', '||', '&&', ';', '&', '>', '>>', '<', '<<', '<<<'}
+# `|` appended to push_args and parsed as a refspec. We also need to handle
+# no-space redirections like `>file`, `>>log`, `<input` — POSIX shlex keeps the
+# redirector glued to the filename as one token, so a startswith check on the
+# leading byte catches both standalone (`|`, `>`) and glued (`>file`) forms.
 
 def _is_shell_boundary(t: str) -> bool:
-    if t in _FIXED_BOUNDARIES:
+    if not t:
+        return False
+    # Leading metachar covers: |, ||, ;, &, &&, >, >>, <, <<, &>, &>>,
+    # plus glued forms: >file, >>log, <input.
+    if t[0] in '|;&><':
         return True
-    if t.startswith('&>'):  # &>, &>>
-        return True
-    # n>, n>>, n>&m, n<, n<&m  (numeric fd redirections like 2>&1, 1>>file)
+    # n>, n>>, n>&m, n<, n<&m  (numeric fd redirections like 2>&1, 1>>file).
     k = 0
     while k < len(t) and t[k].isdigit():
         k += 1
-    if k > 0 and k < len(t) and t[k] in '><':
-        return True
-    return False
+    return k > 0 and k < len(t) and t[k] in '><'
 
 push_args = None
 git_C_path = ''  # value of `-C <path>` on the git command, if any
