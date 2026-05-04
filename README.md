@@ -1,6 +1,6 @@
 # push-guard
 
-Pre-push code safety review plugin for Claude Code.
+Pre-push code safety review plugin for Claude Code. Works with any language.
 
 Automatically blocks `git push` (executed via Claude's Bash tool) until a systematic 4-dimension code review is completed.
 
