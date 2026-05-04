@@ -108,13 +108,29 @@ All tests must pass before unblocking push.
 
 ### Step 5: Unblock Push
 
-After all dimensions are CLEAN or FIXED (and tests pass if anything was fixed):
+The token is **single-use**: the hook deletes it the moment push is allowed. Every push requires its own review.
+
+**Case A — All dimensions CLEAN (no bugs found):**
 
 ```bash
 touch /tmp/pre-push-review-done
 ```
 
-Push is unblocked for 30 minutes from this moment. If you don't push within 30 minutes, the hook will ask you to re-run the skill.
+**Case B — Some dimensions FIXED (bugs found and fixed, tests pass):**
+
+Confirm all fixes are complete and tests are green, then:
+
+```bash
+touch /tmp/pre-push-review-done
+```
+
+**Case C — Issues found but user decides not to fix now:**
+
+Stop. Ask the user explicitly:
+
+> "Found [describe issue]. Fix before pushing, or confirm you're OK pushing with this known issue?"
+
+Only create the token after the user explicitly says it's acceptable to push as-is.
 
 ---
 

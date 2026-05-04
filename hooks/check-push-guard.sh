@@ -5,7 +5,6 @@
 # Exits 2 (block) if git push detected and review marker is absent/stale.
 
 MARKER="/tmp/pre-push-review-done"
-TIMEOUT=1800  # 30 minutes
 
 # Extract command from tool input JSON
 COMMAND=$(python3 -c "
@@ -22,12 +21,8 @@ if echo "$COMMAND" | grep -qE 'git\s+push' && \
    ! echo "$COMMAND" | grep -qE '(--help|-n\b|--dry-run)'; then
 
     if [ -f "$MARKER" ]; then
-        # Linux: stat -c %Y  |  macOS: stat -f %m
-        MTIME=$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null)
-        AGE=$(( $(date +%s) - MTIME ))
-        if [ "$AGE" -lt "$TIMEOUT" ]; then
-            exit 0  # Review done recently — allow push
-        fi
+        rm -f "$MARKER"  # 单次消耗：token 用完即删，下次 push 必须重新 review
+        exit 0
     fi
 
     echo ""

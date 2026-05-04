@@ -16,10 +16,11 @@ Automatically blocks `git push` (executed via Claude's Bash tool) until a system
 ## How It Works
 
 1. `PreToolUse` hook intercepts every Bash tool call
-2. If the command contains `git push`, checks `/tmp/pre-push-review-done`
-3. If marker absent or older than 30 min → **blocks push**, prompts to run skill
+2. If the command contains `git push`, checks for `/tmp/pre-push-review-done`
+3. If marker absent → **blocks push**, prompts to run skill
 4. Run `push-guard:pre-push-review` → skill guides 4-dimension scan
-5. Skill ends with `touch /tmp/pre-push-review-done` → push unblocked for 30 min
+5. Skill creates marker on completion → hook consumes (deletes) it on next push
+6. **Every push requires its own review** — the token is single-use
 
 ## Install
 
