@@ -180,15 +180,13 @@ fi
 # `[ -z "$TARGET_SHA" ]` test never trigger — the bad ref name itself becomes
 # TARGET_SHA and never matches the marker SHA.
 if [ -n "$GIT_C_PATH" ]; then
-    TARGET_SHA=$(git -C "$GIT_C_PATH" rev-parse --verify "$LOCAL_REF" 2>/dev/null)
-    if [ -z "$TARGET_SHA" ]; then
-        TARGET_SHA=$(git -C "$GIT_C_PATH" rev-parse --verify HEAD 2>/dev/null)
-    fi
+    GIT_ARGS=(-C "$GIT_C_PATH")
 else
-    TARGET_SHA=$(git rev-parse --verify "$LOCAL_REF" 2>/dev/null)
-    if [ -z "$TARGET_SHA" ]; then
-        TARGET_SHA=$(git rev-parse --verify HEAD 2>/dev/null)
-    fi
+    GIT_ARGS=()
+fi
+TARGET_SHA=$(git "${GIT_ARGS[@]}" rev-parse --verify "$LOCAL_REF" 2>/dev/null)
+if [ -z "$TARGET_SHA" ]; then
+    TARGET_SHA=$(git "${GIT_ARGS[@]}" rev-parse --verify HEAD 2>/dev/null)
 fi
 
 if [ -f "$MARKER" ]; then
