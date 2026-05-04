@@ -1,6 +1,6 @@
 ---
 name: pre-push-review
-description: Use before every git push or PR creation to run a systematic 4-dimension code safety scan on modified code
+description: Use before every git push or PR creation to run a systematic 5-dimension code safety scan on modified code
 ---
 
 # Pre-Push Code Safety Review
@@ -41,19 +41,21 @@ Note which **functions / methods** were added or modified. Only those need scann
 
 Using the line numbers from the diff output, Read only the changed functions from each file. Do not re-read files already in context unless they changed.
 
-### Step 3: Run 4-Dimension Scan
+### Step 3: Run 5-Dimension Scan
 
 For each modified function, answer every question. If any answer is "no" or "unknown": fix the code or add a test, then re-check that dimension before proceeding.
 
 ---
 
-**Dimension 1 — External Call Exception Safety**
+**Dimension 1 — External Call Exception Safety & Resource Leaks**
 
 For every external call (`subprocess.run`, file I/O, network request, DB query, shell command):
 
 - [ ] If this call raises an exception, are all variables used afterward still guaranteed to be bound?
 - [ ] After any `try/finally` block, are `result` / `fd` / `conn` / similar variables provably bound before use?
 - [ ] Are return codes / HTTP status codes / error fields always checked? (No silent assumption of success.)
+- [ ] Every opened file handle: closed in all code paths — via `with` statement or explicit `finally`?
+- [ ] Every acquired connection (DB, network, lock): released in all code paths including the exception path?
 
 ---
 
@@ -80,6 +82,15 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 ---
 
+**Dimension 5 — Hardcoded Secrets** *(skip entirely if modified code introduces no credentials, tokens, keys, or config files)*
+
+- [ ] No API keys, tokens, passwords, or private keys hardcoded as string literals in source?
+- [ ] No credentials appearing in log statements, error messages, or exception strings?
+- [ ] Any new config / settings files that could contain credentials: listed in `.gitignore`?
+- [ ] Credentials loaded exclusively from env vars, secret managers, or gitignored config files — not committed alongside code?
+
+---
+
 ### Step 4: Report Results
 
 State the outcome for each dimension:
@@ -94,6 +105,7 @@ Dimension 1 — ✅ CLEAN
 Dimension 2 — ⏭️ SKIPPED (no binary/text conversion in changed functions)
 Dimension 3 — ⚠️ FIXED: api.py:42 — added isinstance(resp, dict) check before resp.get("data")
 Dimension 4 — ✅ CLEAN
+Dimension 5 — ⏭️ SKIPPED (no credentials or config files in modified code)
 ```
 
 If any dimension is FIXED, run the test suite before proceeding:
@@ -139,5 +151,6 @@ Only create the token after the user explicitly says it's acceptable to push as-
 **Never:**
 - Mark CLEAN without reading the actual modified code
 - Skip Dimension 1 because "it looks simple" — exception paths hide in simple code
+- Skip Dimension 5 — even "obviously safe" commits have accidentally included tokens in test fixtures or config examples
 - Call `touch /tmp/pre-push-review-done` before tests pass after a fix
 - Scan only the last commit when the branch has multiple commits (Step 1 uses merge-base)
