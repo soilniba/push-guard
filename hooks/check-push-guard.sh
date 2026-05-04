@@ -171,18 +171,22 @@ fi
 
 # Resolve target SHA from the local ref, in the SAME repo the user is pushing
 # (honoring `git -C <path>` if present). Fall back to HEAD when the ref cannot
-# be resolved (e.g. --tags, --mirror, unparseable refspecs) so the check stays
-# at least as strict as the original behavior.
+# be resolved (e.g. --tags, --mirror, unparseable refspecs, or a refspec naming
+# a branch that does not exist locally) so the check stays at least as strict
+# as the original behavior.
+#
+# `--verify` is required: without it, `git rev-parse <bad-ref>` echoes the
+# literal arg to stdout on failure (exit 128), which makes the fallback's
+# `[ -z "$TARGET_SHA" ]` test never trigger — the bad ref name itself becomes
+# TARGET_SHA and never matches the marker SHA.
 if [ -n "$GIT_C_PATH" ]; then
-    TARGET_SHA=$(git -C "$GIT_C_PATH" rev-parse "$LOCAL_REF" 2>/dev/null)
-    if [ -z "$TARGET_SHA" ]; then
-        TARGET_SHA=$(git -C "$GIT_C_PATH" rev-parse HEAD 2>/dev/null)
-    fi
+    GIT_ARGS=(-C "$GIT_C_PATH")
 else
-    TARGET_SHA=$(git rev-parse "$LOCAL_REF" 2>/dev/null)
-    if [ -z "$TARGET_SHA" ]; then
-        TARGET_SHA=$(git rev-parse HEAD 2>/dev/null)
-    fi
+    GIT_ARGS=()
+fi
+TARGET_SHA=$(git "${GIT_ARGS[@]}" rev-parse --verify "$LOCAL_REF" 2>/dev/null)
+if [ -z "$TARGET_SHA" ]; then
+    TARGET_SHA=$(git "${GIT_ARGS[@]}" rev-parse --verify HEAD 2>/dev/null)
 fi
 
 if [ -f "$MARKER" ]; then
