@@ -43,6 +43,27 @@ except Exception:
 GIT_OPTS_WITH_VALUE = {'-C', '-c', '--git-dir', '--work-tree', '--namespace',
                       '--super-prefix', '--list-cmds'}
 
+# Shell metacharacters and redirection operators that end the current command's
+# args. shlex.split treats these as separate tokens but does NOT understand them
+# as shell operators, so without this filter `git push 2>&1 | tail` would have
+# `|` appended to push_args and parsed as a refspec. We also need to handle
+# no-space redirections like `>file`, `>>log`, `<input` — POSIX shlex keeps the
+# redirector glued to the filename as one token, so a startswith check on the
+# leading byte catches both standalone (`|`, `>`) and glued (`>file`) forms.
+
+def _is_shell_boundary(t: str) -> bool:
+    if not t:
+        return False
+    # Leading metachar covers: |, ||, ;, &, &&, >, >>, <, <<, &>, &>>,
+    # plus glued forms: >file, >>log, <input.
+    if t[0] in '|;&><':
+        return True
+    # n>, n>>, n>&m, n<, n<&m  (numeric fd redirections like 2>&1, 1>>file).
+    k = 0
+    while k < len(t) and t[k].isdigit():
+        k += 1
+    return k > 0 and k < len(t) and t[k] in '><'
+
 push_args = None
 git_C_path = ''  # value of `-C <path>` on the git command, if any
 i = 0
@@ -53,8 +74,19 @@ while i < len(toks):
         local_C = ''
         while j < len(toks):
             t = toks[j]
+            if _is_shell_boundary(t):
+                # Statement ends before `push` was found — different command.
+                break
             if t == 'push':
-                push_args = toks[j + 1:]
+                # Truncate args at the next shell boundary so pipe / redirect
+                # tokens don't bleed into refspec parsing.
+                rest = toks[j + 1:]
+                cut = len(rest)
+                for idx, tok in enumerate(rest):
+                    if _is_shell_boundary(tok):
+                        cut = idx
+                        break
+                push_args = rest[:cut]
                 git_C_path = local_C
                 break
             if t == '-C' and j + 1 < len(toks):
