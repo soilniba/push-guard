@@ -26,6 +26,13 @@ Automatically blocks `git push` (executed via Claude's Bash tool) until a system
 
 Earlier versions used file-existence as the gate, which a bare `touch /tmp/pre-push-review-done` could bypass — including accidental cases where the marker-creation command was chained (`touch ... && git push`) in a single Bash call, producing no real review window. Tying the marker to the HEAD SHA closes that loop: the marker can only be produced from inside the working tree, after the commit being pushed exists, and is invalidated the moment HEAD moves.
 
+### Pushing from a different repo: use `git -C`, not `cd &&`
+
+The hook is a token-level parser — it reads `git -C <path>` from the command and resolves the ref in that repo, but it can't follow shell builtins like `cd` (no reliable way to track cwd mutations across `cd ... && git ...`). When the Bash tool's cwd is repo A but you want to push repo B:
+
+✅ `git -C /path/to/repoB push origin main`
+❌ `cd /path/to/repoB && git push origin main` — hook resolves the ref in repo A's cwd, mismatches the marker SHA, blocks the push
+
 ## Install
 
 ```bash
