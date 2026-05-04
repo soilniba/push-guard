@@ -71,6 +71,7 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 - [ ] Every `json.loads()` / `yaml.safe_load()` / deserialized API response: is the top-level type checked before field access (e.g., `isinstance(x, dict)` before `.get()` or `x["key"]`)?
 - [ ] Environment variables / CLI args / user input / HTTP request body: validated for type and range at the system boundary, not assumed?
+- [ ] Every discriminator / enum string from external data (e.g., `verdict`, `kind`, `status`, `type`): does the code branch on **every known value** AND have an explicit **unknown fallback** (warn / skip / raise)? A silent `elif` on the last known value hides typos — `verdict: cnacel` would just be ignored, and the same bad file would re-trigger the silent skip on every retry.
 
 ---
 
@@ -79,6 +80,7 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 - [ ] Every transition into a target state: are **all** required fields set — not just the primary status/phase field, but also secondary fields (e.g., IDs that must be None, counters that reset)?
 - [ ] Fields that must be cleared on entering a state: explicitly set to `None` / `0` / empty — not left as whatever they were before?
 - [ ] New event types / message kinds / routes / commands: registered in every relevant dispatcher, handler map, or routing table?
+- [ ] Loop-derived deduplication sets built from prior events / records (e.g., `seen = {e.id for e in events if e.event == "X"}`): when the same loop **emits new entries**, is the set `.add(...)`'d **in-iteration**? Otherwise a single batch containing multiple inputs targeting the same key emits duplicate events — the set was a snapshot of pre-loop state and never sees what the loop just produced.
 
 ---
 
