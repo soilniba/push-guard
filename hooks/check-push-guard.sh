@@ -2,7 +2,7 @@
 # Push Guard: block git push via Claude Bash tool until pre-push-review skill completes.
 #
 # Hook input arrives via stdin as JSON: {"tool_name":"Bash","tool_input":{"command":"..."}}
-# Exits 2 (block) if git push detected and review marker is absent.
+# Outputs JSON to deny the push if review marker is absent.
 
 MARKER="/tmp/pre-push-review-done"
 
@@ -25,16 +25,18 @@ if echo "$COMMAND" | grep -qE 'git\s+push' && \
         exit 0
     fi
 
-    echo ""
-    echo "🚫 Push blocked: pre-push review not completed."
-    echo ""
-    echo "Run the review skill first:"
-    echo "  push-guard:pre-push-review"
-    echo ""
-    echo "The skill will scan modified code across 4 safety dimensions."
-    echo "Push unblocks automatically after skill completes (single-use token)."
-    echo ""
-    exit 2
+    python3 -c "
+import json
+print(json.dumps({
+    'systemMessage': '🚫 Push blocked: run push-guard:pre-push-review first (4-dimension safety scan)',
+    'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': 'Pre-push review not completed. Run: push-guard:pre-push-review'
+    }
+}))
+"
+    exit 0
 fi
 
 exit 0
