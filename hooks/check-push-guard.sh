@@ -323,8 +323,9 @@ for e in events[skill_idx + 1:]:
             if fp:
                 # Normalize to relative-from-repo-root if possible.
                 # Diff paths are repo-relative; transcript paths are absolute.
-                # Match by suffix.
-                read_files.add(fp)
+                # Match by suffix. On Windows, Read passes backslash paths;
+                # diff_files always use `/`, so normalize to `/` here.
+                read_files.add(fp.replace('\\', '/'))
 
 joined_text = '\n'.join(texts)
 
