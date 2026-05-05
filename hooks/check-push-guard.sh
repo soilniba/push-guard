@@ -335,7 +335,12 @@ for e in events[skill_idx + 1:]:
                 # signature in the prompt. Other agent spawns are unrelated.
                 inp = c.get('input') or {}
                 if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
-                    agent_ids.add(c.get('id'))
+                    aid = c.get('id')
+                    # Reject id=None: a malformed tool_use without an id
+                    # would otherwise let any tool_result lacking
+                    # `tool_use_id` (also None) match and pollute sub_texts.
+                    if aid:
+                        agent_ids.add(aid)
     elif etype == 'user':
         # Agent tool_result events live on the user side. Pair with
         # tool_use_id collected above.
@@ -447,16 +452,38 @@ diff_added_lines = sum(
 )
 diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 
+# Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5 sequence.
+# A subagent is told to emit exactly five lines, but real outputs often contain
+# stray CITE_RE-shaped strings: CoT preamble (`先看 D1 ...`) before the block,
+# or FINDINGS bullets after the block that quote `D{N} VERDICT — file:line` as
+# discussion examples. A naive last-wins parse lets such strays override real
+# verdicts. Requiring strict 1,2,3,4,5 dim-order means stray cites that don't
+# form a complete in-order block are ignored. Multiple complete blocks → the
+# last one wins (re-emission is supported).
 sub_cites: dict = {}
+_seq: list = []  # in-progress 1..5 block being built
 for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
-    # First cite per dimension wins (subagent should emit each once).
-    sub_cites.setdefault(dim, {
-        'verdict': m.group(2),
-        'file': m.group(3).replace('\\', '/'),
-        'line': int(m.group(4)),
-        'reason': m.group(5),
-    })
+    expected = len(_seq) + 1
+    if dim == expected:
+        _seq.append(m)
+        if len(_seq) == 5:
+            sub_cites = {
+                int(sm.group(1)): {
+                    'verdict': sm.group(2),
+                    'file': sm.group(3).replace('\\', '/'),
+                    'line': int(sm.group(4)),
+                    'reason': sm.group(5),
+                }
+                for sm in _seq
+            }
+            _seq = []
+    elif dim == 1:
+        # Stray match broke the sequence, but this match is itself a fresh D1
+        # so start a new attempt from here.
+        _seq = [m]
+    else:
+        _seq = []
 
 if diff_is_large and not sub_cites:
     emit('FAIL',
