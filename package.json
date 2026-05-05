@@ -1,7 +1,7 @@
 {
   "name": "push-guard",
   "description": "Pre-push code safety review skill for Claude Code: systematic 5-dimension check before every git push",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "author": {
     "name": "soilniba"
   },

@@ -335,7 +335,12 @@ for e in events[skill_idx + 1:]:
                 # signature in the prompt. Other agent spawns are unrelated.
                 inp = c.get('input') or {}
                 if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
-                    agent_ids.add(c.get('id'))
+                    aid = c.get('id')
+                    # Reject id=None: a malformed tool_use without an id
+                    # would otherwise let any tool_result lacking
+                    # `tool_use_id` (also None) match and pollute sub_texts.
+                    if aid:
+                        agent_ids.add(aid)
     elif etype == 'user':
         # Agent tool_result events live on the user side. Pair with
         # tool_use_id collected above.
@@ -450,13 +455,17 @@ diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 sub_cites: dict = {}
 for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
-    # First cite per dimension wins (subagent should emit each once).
-    sub_cites.setdefault(dim, {
+    # Last cite per dimension wins. The skill template tells the subagent to
+    # emit no preamble, but in practice agents sometimes precede the final
+    # 5-line block with CoT lines that themselves match CITE_RE (e.g. "D1
+    # CLEAN — file:42 (initial scan)"). Taking the last cite anchors to the
+    # actual final block instead of locking on a stray reasoning artifact.
+    sub_cites[dim] = {
         'verdict': m.group(2),
         'file': m.group(3).replace('\\', '/'),
         'line': int(m.group(4)),
         'reason': m.group(5),
-    })
+    }
 
 if diff_is_large and not sub_cites:
     emit('FAIL',
