@@ -159,7 +159,7 @@ fi
 
 # ===== Stage 3: transcript audit =====
 AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" python3 <<'PYEOF'
-import os, json, re, subprocess, sys
+import os, json, re, glob, subprocess, sys
 from datetime import datetime
 
 def emit(verdict: str, reason: str = '') -> None:
@@ -178,6 +178,25 @@ transcript_path = hook_input.get('transcript_path', '')
 
 if not transcript_path:
     emit('FAIL', 'hook input has no transcript_path')
+
+# Worktree fallback: in some setups (e.g. Claude session started in a parent
+# repo, then cwd switched into a worktree under .claude/worktrees/), Claude
+# Code encodes transcript_path against cwd but writes the jsonl under the
+# parent repo's project dir. The literal path then doesn't exist. Fall back
+# to a basename search under ~/.claude/projects/*/.
+#
+# Strict UUID regex on the basename: rejects non-UUID names so an attacker (or
+# a buggy wrapper) can't make the hook resolve `transcript_path = passwd.jsonl`
+# and load whatever same-named file happens to exist under ~/.claude/projects/.
+# UUID v4 basenames are globally unique in real Claude Code, so on collision we
+# can take candidates[0] — picking by mtime would just add a getmtime race for
+# no observable benefit.
+if not os.path.exists(transcript_path):
+    bn = os.path.basename(transcript_path)
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$', bn):
+        candidates = glob.glob(os.path.expanduser(f'~/.claude/projects/*/{bn}'))
+        if candidates:
+            transcript_path = candidates[0]
 if not os.path.exists(transcript_path):
     emit('FAIL', f'transcript not found at {transcript_path}')
 
