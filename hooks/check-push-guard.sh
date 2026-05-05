@@ -159,7 +159,7 @@ fi
 
 # ===== Stage 3: transcript audit =====
 AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" python3 <<'PYEOF'
-import os, json, re, subprocess, sys
+import os, json, re, glob, subprocess, sys
 from datetime import datetime
 
 def emit(verdict: str, reason: str = '') -> None:
@@ -178,6 +178,19 @@ transcript_path = hook_input.get('transcript_path', '')
 
 if not transcript_path:
     emit('FAIL', 'hook input has no transcript_path')
+
+# Worktree fallback: in some setups (e.g. Claude session started in a parent
+# repo, then cwd switched into a worktree under .claude/worktrees/), Claude
+# Code encodes transcript_path against cwd but writes the jsonl under the
+# parent repo's project dir. The literal path then doesn't exist. Fall back
+# to a basename search under ~/.claude/projects/*/ — UUID basenames are
+# globally unique, so any match is the right session.
+if not os.path.exists(transcript_path):
+    bn = os.path.basename(transcript_path)
+    if bn.endswith('.jsonl'):
+        candidates = glob.glob(os.path.expanduser(f'~/.claude/projects/*/{bn}'))
+        if candidates:
+            transcript_path = max(candidates, key=os.path.getmtime)
 if not os.path.exists(transcript_path):
     emit('FAIL', f'transcript not found at {transcript_path}')
 
