@@ -193,7 +193,7 @@ if not transcript_path:
 # no observable benefit.
 if not os.path.exists(transcript_path):
     bn = os.path.basename(transcript_path)
-    if re.match(r'^[0-9a-f-]{36}\.jsonl$', bn):
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$', bn):
         candidates = glob.glob(os.path.expanduser(f'~/.claude/projects/*/{bn}'))
         if candidates:
             transcript_path = candidates[0]
