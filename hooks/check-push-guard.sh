@@ -214,15 +214,20 @@ if base == target_sha:
     # Pushing already-pushed work, no new diff to review.
     emit('PASS', 'no new commits since base')
 
-# Parse diff hunks → {file: set(line_numbers in NEW file)}
-diff_unified0 = git('diff', '--unified=0', f'{base}..{target_sha}')
-diff_full = git('diff', f'{base}..{target_sha}')
+# Parse diff hunks → {file: set(line_numbers in NEW file)}.
+# `-c core.quotePath=false` keeps non-ASCII / spaced filenames as raw UTF-8
+# instead of git's default quoted+octal-escaped form, so we don't need to
+# unquote when matching against cite paths.
+diff_unified0 = git('-c', 'core.quotePath=false', 'diff', '--unified=0', f'{base}..{target_sha}')
+diff_full = git('-c', 'core.quotePath=false', 'diff', f'{base}..{target_sha}')
 
 hunks: dict = {}
 cur_file = None
 for line in diff_unified0.split('\n'):
     if line.startswith('+++ b/'):
-        cur_file = line[6:]
+        # With core.quotePath=false, git emits a trailing TAB on paths that
+        # would normally be quoted (spaces / non-ASCII). Strip it.
+        cur_file = line[6:].rstrip('\t')
         hunks.setdefault(cur_file, set())
     elif line.startswith('+++ /dev/null'):
         cur_file = None  # file deleted
@@ -335,9 +340,11 @@ if not any(matches_diff_file(rf) for rf in read_files):
          f'no Read tool call observed on any modified file after skill invocation. '
          f'Modified files: {sorted(diff_files)}. Read at least one before reporting.')
 
-# Parse 5 cites
+# Parse 5 cites. Path uses `.+?` (not `\S+?`) so filenames with spaces
+# work; the trailing `:(\d+)\s+\(` anchor pins the non-greedy match to the
+# last `:digits` before the reason paren.
 CITE_RE = re.compile(
-    r'D([1-5])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(\S+?):(\d+)\s+\(([^)]{1,200})\)'
+    r'D([1-5])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(.+?):(\d+)\s+\(([^)]{1,200})\)'
 )
 
 cites: dict = {}
