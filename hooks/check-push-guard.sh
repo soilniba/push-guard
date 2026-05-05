@@ -353,7 +353,9 @@ for m in CITE_RE.finditer(joined_text):
     dim = int(m.group(1))
     cites[dim] = {
         'verdict': m.group(2),
-        'file': m.group(3),
+        # diff_files always use `/`; normalize cite path so a Windows-typed
+        # cite with backslashes still matches.
+        'file': m.group(3).replace('\\', '/'),
         'line': int(m.group(4)),
         'reason': m.group(5),
     }
