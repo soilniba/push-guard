@@ -94,6 +94,51 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 ---
 
+### Step 3.5: Independent Reviewer Subagent (REQUIRED for large diffs)
+
+The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 5-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
+
+**Why:** the same agent that wrote the code also reviews it. A fresh-context subagent reading the diff cold catches blind spots that confirmation bias missed. Verdict agreement across two independent passes is much stronger evidence than a single self-review.
+
+**Small diffs** (≤30 added lines AND ≤2 files): subagent is optional, but if you spawn one its verdict still must agree.
+
+**How to spawn (verbatim template — the signature is what the hook looks for):**
+
+Invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below (copy literally; the bracketed signature on the first line is mandatory):
+
+```
+[PUSH-GUARD-INDEPENDENT-REVIEW v1]
+
+You are an independent code reviewer. You have NO context from the parent
+conversation, NO access to project memory, and you MUST NOT invoke any Skill,
+MUST NOT read ~/.claude/CLAUDE.md, MUST NOT read project memory files under
+.claude/projects/*/memory/, and MUST NOT read .claude/settings.json.
+
+Your job: scan the diff at HEAD against its merge-base with main/master, then
+emit exactly five lines in this format:
+
+  D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
+
+Where N is 1..5, VERDICT is CLEAN | FIXED | SKIPPED, file:line is inside the
+diff hunks for CLEAN/FIXED (use file:0 for SKIPPED), reason is ≤80 chars.
+
+The five dimensions:
+  D1 — External call exception safety & resource leaks
+  D2 — I/O encoding boundary safety (SKIPPED if no encode/decode/seek)
+  D3 — External data type validation (SKIPPED if no json.loads/yaml/etc.)
+  D4 — State / invariant completeness (SKIPPED if no state machine / registry)
+  D5 — Hardcoded secrets (SKIPPED if no credentials introduced)
+
+Process:
+  1. Run: git diff $(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null) HEAD
+  2. Read each modified file at the touched line ranges using the Read tool.
+  3. For each dimension, decide CLEAN / FIXED / SKIPPED on the merits — do NOT
+     defer to or read any prior review.
+  4. Output the five lines. No preamble, no summary, no extra text.
+```
+
+After the subagent returns, the hook will parse its 5-line report from the Agent tool_result and require D1–D5 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
+
 ### Step 4: Emit the Report (REQUIRED FORMAT)
 
 Output **exactly five** lines, one per dimension, in this format:

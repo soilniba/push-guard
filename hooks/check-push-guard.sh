@@ -305,29 +305,54 @@ if skill_idx is None:
          f'Skill {SKILL_NAME} was not invoked since HEAD commit ({target_sha[:7]}). '
          f'Run the skill, do the scan, then push.')
 
-# Collect assistant text + Read tool calls AFTER the skill invocation
-texts = []
+# Collect main-agent assistant text + Read tool calls + independent reviewer
+# subagent invocations (Agent tool_use with our signature) AFTER the skill
+# invocation. Subagent reports come back as Agent tool_result events on the
+# user side; collect those separately so cites are parsed independently.
+SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
+main_texts = []
+sub_texts = []
 read_files = set()
+agent_ids: set = set()
 for e in events[skill_idx + 1:]:
-    if e.get('type') != 'assistant':
-        continue
+    etype = e.get('type')
     msg = e.get('message') or {}
-    for c in (msg.get('content') or []):
-        if not isinstance(c, dict):
-            continue
-        ctype = c.get('type')
-        if ctype == 'text':
-            texts.append(c.get('text') or '')
-        elif ctype == 'tool_use' and c.get('name') == 'Read':
-            fp = (c.get('input') or {}).get('file_path') or ''
-            if fp:
-                # Normalize to relative-from-repo-root if possible.
-                # Diff paths are repo-relative; transcript paths are absolute.
-                # Match by suffix. On Windows, Read passes backslash paths;
-                # diff_files always use `/`, so normalize to `/` here.
-                read_files.add(fp.replace('\\', '/'))
+    if etype == 'assistant':
+        for c in (msg.get('content') or []):
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get('type')
+            if ctype == 'text':
+                main_texts.append(c.get('text') or '')
+            elif ctype == 'tool_use' and c.get('name') == 'Read':
+                fp = (c.get('input') or {}).get('file_path') or ''
+                if fp:
+                    # Normalize: diff paths use `/`; on Windows, Read passes
+                    # backslash absolute paths, so normalize to `/` for suffix match.
+                    read_files.add(fp.replace('\\', '/'))
+            elif ctype == 'tool_use' and c.get('name') == 'Agent':
+                # Only count Agent calls that carry our independent-reviewer
+                # signature in the prompt. Other agent spawns are unrelated.
+                inp = c.get('input') or {}
+                if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
+                    agent_ids.add(c.get('id'))
+    elif etype == 'user':
+        # Agent tool_result events live on the user side. Pair with
+        # tool_use_id collected above.
+        for c in (msg.get('content') or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get('type') == 'tool_result' and c.get('tool_use_id') in agent_ids:
+                content = c.get('content')
+                if isinstance(content, str):
+                    sub_texts.append(content)
+                elif isinstance(content, list):
+                    for sub in content:
+                        if isinstance(sub, dict) and sub.get('type') == 'text':
+                            sub_texts.append(sub.get('text') or '')
 
-joined_text = '\n'.join(texts)
+joined_text = '\n'.join(main_texts)
+sub_joined_text = '\n'.join(sub_texts)
 
 # Verify Read tool was used on at least one diff file
 def matches_diff_file(read_fp: str) -> bool:
@@ -410,6 +435,51 @@ for dim, c in cites.items():
         emit('FAIL',
              f'D{dim} cite line {ln} is outside diff hunks for {fp}. '
              f'Modified lines (sample): {sample}.')
+
+# ===== Dual-reviewer gate =====
+# Large diffs require an independent reviewer subagent. Small diffs may use one
+# but don't have to. When a subagent IS present, its 5-dimension verdict must
+# agree with the main agent's per-dimension — disagreement means a real risk
+# was spotted by one and missed by the other.
+diff_added_lines = sum(
+    1 for line in diff_full.split('\n')
+    if line.startswith('+') and not line.startswith('+++')
+)
+diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
+
+sub_cites: dict = {}
+for m in CITE_RE.finditer(sub_joined_text):
+    dim = int(m.group(1))
+    # First cite per dimension wins (subagent should emit each once).
+    sub_cites.setdefault(dim, {
+        'verdict': m.group(2),
+        'file': m.group(3).replace('\\', '/'),
+        'line': int(m.group(4)),
+        'reason': m.group(5),
+    })
+
+if diff_is_large and not sub_cites:
+    emit('FAIL',
+         f'diff is large ({diff_added_lines} added lines across '
+         f'{len(diff_files)} files); independent reviewer subagent is '
+         f'required. Spawn the Agent tool with prompt starting '
+         f'"{SUBAGENT_SIGNATURE}" — see SKILL.md Step 3.5.')
+
+if sub_cites:
+    sub_missing = [d for d in (1, 2, 3, 4, 5) if d not in sub_cites]
+    if sub_missing:
+        miss_list = ', '.join(f'D{d}' for d in sub_missing)
+        emit('FAIL',
+             f'independent reviewer subagent report is missing cites for '
+             f'{miss_list}. Subagent must emit all 5 dimensions in the same '
+             f'format as the main report.')
+    for dim in (1, 2, 3, 4, 5):
+        m_v = cites[dim]['verdict']
+        s_v = sub_cites[dim]['verdict']
+        if m_v != s_v:
+            emit('FAIL',
+                 f'D{dim} verdict mismatch: main={m_v}, independent={s_v}. '
+                 f'Reconcile (fix code or re-examine) and re-emit both reports.')
 
 emit('PASS', 'all 5 cites validated against diff hunks')
 PYEOF
