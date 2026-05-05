@@ -452,20 +452,38 @@ diff_added_lines = sum(
 )
 diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 
+# Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5 sequence.
+# A subagent is told to emit exactly five lines, but real outputs often contain
+# stray CITE_RE-shaped strings: CoT preamble (`先看 D1 ...`) before the block,
+# or FINDINGS bullets after the block that quote `D{N} VERDICT — file:line` as
+# discussion examples. A naive last-wins parse lets such strays override real
+# verdicts. Requiring strict 1,2,3,4,5 dim-order means stray cites that don't
+# form a complete in-order block are ignored. Multiple complete blocks → the
+# last one wins (re-emission is supported).
 sub_cites: dict = {}
+_seq: list = []  # in-progress 1..5 block being built
 for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
-    # Last cite per dimension wins. The skill template tells the subagent to
-    # emit no preamble, but in practice agents sometimes precede the final
-    # 5-line block with CoT lines that themselves match CITE_RE (e.g. "D1
-    # CLEAN — file:42 (initial scan)"). Taking the last cite anchors to the
-    # actual final block instead of locking on a stray reasoning artifact.
-    sub_cites[dim] = {
-        'verdict': m.group(2),
-        'file': m.group(3).replace('\\', '/'),
-        'line': int(m.group(4)),
-        'reason': m.group(5),
-    }
+    expected = len(_seq) + 1
+    if dim == expected:
+        _seq.append(m)
+        if len(_seq) == 5:
+            sub_cites = {
+                int(sm.group(1)): {
+                    'verdict': sm.group(2),
+                    'file': sm.group(3).replace('\\', '/'),
+                    'line': int(sm.group(4)),
+                    'reason': sm.group(5),
+                }
+                for sm in _seq
+            }
+            _seq = []
+    elif dim == 1:
+        # Stray match broke the sequence, but this match is itself a fresh D1
+        # so start a new attempt from here.
+        _seq = [m]
+    else:
+        _seq = []
 
 if diff_is_large and not sub_cites:
     emit('FAIL',
