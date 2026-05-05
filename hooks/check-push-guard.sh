@@ -296,7 +296,7 @@ for i, e in enumerate(events):
             continue
         if c.get('type') == 'tool_use' and c.get('name') == 'Skill':
             inp = c.get('input') or {}
-            if inp.get('skill_name') == SKILL_NAME:
+            if inp.get('skill') == SKILL_NAME:
                 if event_time(e) >= head_time:
                     skill_idx = i
 
