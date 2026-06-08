@@ -1,6 +1,6 @@
 #!/bin/bash
 # Push Guard: block git push via Claude Bash tool until pre-push-review skill
-# emits a verifiable 5-dimension report with file:line citations inside the diff.
+# emits a verifiable 6-dimension report with file:line citations inside the diff.
 #
 # Hook input arrives via stdin as JSON:
 #   {"tool_name":"Bash","tool_input":{"command":"..."},"transcript_path":"...",...}
@@ -13,7 +13,7 @@
 # file. A bare token write cannot bypass; the hook validates that:
 #   1. push-guard:pre-push-review Skill was invoked since HEAD's commit time
 #   2. The Read tool was used on a file in this push's diff
-#   3. Five dimension cites D1..D5 appear in the assistant text after the
+#   3. Six dimension cites D1..D6 appear in the assistant text after the
 #      Skill invocation, in the format `D{N} {VERDICT} — {file}:{line} (reason)`
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
 #   5. SKIPPED is only allowed when conservative regex on diff finds no
@@ -390,11 +390,11 @@ if not any(matches_diff_file(rf) for rf in read_files):
          f'no Read tool call observed on any modified file after skill invocation. '
          f'Modified files: {sorted(diff_files)}. Read at least one before reporting.')
 
-# Parse 5 cites. Path uses `.+?` (not `\S+?`) so filenames with spaces
+# Parse 6 cites. Path uses `.+?` (not `\S+?`) so filenames with spaces
 # work; the trailing `:(\d+)\s+\(` anchor pins the non-greedy match to the
 # last `:digits` before the reason paren.
 CITE_RE = re.compile(
-    r'D([1-5])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(.+?):(\d+)\s+\(([^)]{1,200})\)'
+    r'D([1-6])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(.+?):(\d+)\s+\(([^)]{1,200})\)'
 )
 
 cites: dict = {}
@@ -409,13 +409,13 @@ for m in CITE_RE.finditer(joined_text):
         'reason': m.group(5),
     }
 
-missing = [d for d in (1, 2, 3, 4, 5) if d not in cites]
+missing = [d for d in (1, 2, 3, 4, 5, 6) if d not in cites]
 if missing:
     miss_list = ', '.join(f'D{d}' for d in missing)
     emit('FAIL',
          f'missing cites for {miss_list}. Required format: '
          f'`D{{N}} {{CLEAN|FIXED|SKIPPED}} — {{file}}:{{line}} ({{reason}})` '
-         f'with all 5 dimensions.')
+         f'with all 6 dimensions.')
 
 # Conservative SKIP-reason grep patterns. SKIPPED is rejected if its
 # dimension's pattern is found in added lines of the diff.
@@ -428,6 +428,11 @@ SKIP_REJECT_PATTERNS = {
     3: re.compile(r'json\.loads|yaml\.safe_load|pickle\.loads|response\.json\(|xmltodict|argparse'),
     4: re.compile(r'\bclass\s+\w*(State|Machine|Dispatcher|Handler|Registry)\b|\bregistry\s*=\s*\{'),
     5: re.compile(r'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16}|xox[bp]-[A-Za-z0-9-]{20,}'),
+    6: re.compile(
+        r'\b(price|amount|cost|pnl|return|rate|ratio|percent|quantity)\b'
+        r'|\b(round|abs|int|float)\s*\(',
+        re.IGNORECASE,
+    ),
 }
 
 # Validate each cite
@@ -462,7 +467,7 @@ for dim, c in cites.items():
 
 # ===== Dual-reviewer gate =====
 # Large diffs require an independent reviewer subagent. Small diffs may use one
-# but don't have to. When a subagent IS present, its 5-dimension verdict must
+# but don't have to. When a subagent IS present, its 6-dimension verdict must
 # agree with the main agent's per-dimension — disagreement means a real risk
 # was spotted by one and missed by the other.
 diff_added_lines = sum(
@@ -471,22 +476,22 @@ diff_added_lines = sum(
 )
 diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 
-# Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5 sequence.
-# A subagent is told to emit exactly five lines, but real outputs often contain
+# Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5→D6 sequence.
+# A subagent is told to emit exactly six lines, but real outputs often contain
 # stray CITE_RE-shaped strings: CoT preamble (`先看 D1 ...`) before the block,
 # or FINDINGS bullets after the block that quote `D{N} VERDICT — file:line` as
 # discussion examples. A naive last-wins parse lets such strays override real
-# verdicts. Requiring strict 1,2,3,4,5 dim-order means stray cites that don't
+# verdicts. Requiring strict 1,2,3,4,5,6 dim-order means stray cites that don't
 # form a complete in-order block are ignored. Multiple complete blocks → the
 # last one wins (re-emission is supported).
 sub_cites: dict = {}
-_seq: list = []  # in-progress 1..5 block being built
+_seq: list = []  # in-progress 1..6 block being built
 for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
     expected = len(_seq) + 1
     if dim == expected:
         _seq.append(m)
-        if len(_seq) == 5:
+        if len(_seq) == 6:
             sub_cites = {
                 int(sm.group(1)): {
                     'verdict': sm.group(2),
@@ -512,14 +517,14 @@ if diff_is_large and not sub_cites:
          f'"{SUBAGENT_SIGNATURE}" — see SKILL.md Step 3.5.')
 
 if sub_cites:
-    sub_missing = [d for d in (1, 2, 3, 4, 5) if d not in sub_cites]
+    sub_missing = [d for d in (1, 2, 3, 4, 5, 6) if d not in sub_cites]
     if sub_missing:
         miss_list = ', '.join(f'D{d}' for d in sub_missing)
         emit('FAIL',
              f'independent reviewer subagent report is missing cites for '
-             f'{miss_list}. Subagent must emit all 5 dimensions in the same '
+             f'{miss_list}. Subagent must emit all 6 dimensions in the same '
              f'format as the main report.')
-    for dim in (1, 2, 3, 4, 5):
+    for dim in (1, 2, 3, 4, 5, 6):
         m_v = cites[dim]['verdict']
         s_v = sub_cites[dim]['verdict']
         if m_v != s_v:
@@ -527,7 +532,7 @@ if sub_cites:
                  f'D{dim} verdict mismatch: main={m_v}, independent={s_v}. '
                  f'Reconcile (fix code or re-examine) and re-emit both reports.')
 
-emit('PASS', 'all 5 cites validated against diff hunks')
+emit('PASS', 'all 6 cites validated against diff hunks')
 PYEOF
 )
 

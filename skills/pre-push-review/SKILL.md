@@ -1,6 +1,6 @@
 ---
 name: pre-push-review
-description: Use before every git push or PR creation to run a systematic 5-dimension code safety scan on modified code
+description: Use before every git push or PR creation to run a systematic 6-dimension code safety scan on modified code
 ---
 
 # Pre-Push Code Safety Review
@@ -9,14 +9,14 @@ description: Use before every git push or PR creation to run a systematic 5-dime
 
 ## When to Use
 
-**Mandatory** — before any `git push` or PR creation. The hook auto-blocks `git push` via Bash tool until this skill runs and emits a valid 5-dimension report with verifiable file:line citations.
+**Mandatory** — before any `git push` or PR creation. The hook auto-blocks `git push` via Bash tool until this skill runs and emits a valid 6-dimension report with verifiable file:line citations.
 
 ## Anti-Bypass Notice
 
 The hook does **not** trust a marker file or self-attestation. It reads the Claude Code session transcript and verifies:
 
 1. This skill was actually invoked since the HEAD commit
-2. The 5-dimension report was emitted in the required format (below)
+2. The 6-dimension report was emitted in the required format (below)
 3. Every CLEAN/FIXED cite points to a `file:line` that is **inside this push's diff**
 4. SKIPPED dimensions are only allowed when the diff genuinely contains no patterns matching that dimension
 
@@ -94,9 +94,19 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 ---
 
+**Dimension 6 — Semantic Logic Correctness** *(SKIPPED only if diff has no business logic / calculation changes)*
+
+- [ ] 变量的实际含义是否匹配其使用场景？（如 score 是排序分数，不是价格）
+- [ ] 单位/量纲是否一致？（百分比 vs 小数、万元 vs 元）
+- [ ] 计算公式是否合理？（止损价应低于买入价、收益率不会超过 100%）
+- [ ] 函数返回值的语义是否与调用方期望匹配？
+- [ ] 硬编码数值是否有业务依据？（magic number 检查）
+
+---
+
 ### Step 3.5: Independent Reviewer Subagent (REQUIRED for large diffs)
 
-The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 5-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
+The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 6-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
 
 **Why:** the same agent that wrote the code also reviews it. A fresh-context subagent reading the diff cold catches blind spots that confirmation bias missed. Verdict agreement across two independent passes is much stronger evidence than a single self-review.
 
@@ -115,40 +125,41 @@ MUST NOT read ~/.claude/CLAUDE.md, MUST NOT read project memory files under
 .claude/projects/*/memory/, and MUST NOT read .claude/settings.json.
 
 Your job: scan the diff at HEAD against its merge-base with main/master, then
-emit exactly five lines in this format:
+emit exactly six lines in this format:
 
   D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
 
-Where N is 1..5, VERDICT is CLEAN | FIXED | SKIPPED, file:line is inside the
+Where N is 1..6, VERDICT is CLEAN | FIXED | SKIPPED, file:line is inside the
 diff hunks for CLEAN/FIXED (use file:0 for SKIPPED), reason is ≤80 chars.
 
-The five dimensions:
+The six dimensions:
   D1 — External call exception safety & resource leaks
   D2 — I/O encoding boundary safety (SKIPPED if no encode/decode/seek)
   D3 — External data type validation (SKIPPED if no json.loads/yaml/etc.)
   D4 — State / invariant completeness (SKIPPED if no state machine / registry)
   D5 — Hardcoded secrets (SKIPPED if no credentials introduced)
+  D6 — Semantic logic correctness (SKIPPED if no business logic changes)
 
 Process:
   1. Run: git diff $(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null) HEAD
   2. Read each modified file at the touched line ranges using the Read tool.
   3. For each dimension, decide CLEAN / FIXED / SKIPPED on the merits — do NOT
      defer to or read any prior review.
-  4. Output the five lines. No preamble, no summary, no extra text.
+  4. Output the six lines. No preamble, no summary, no extra text.
 ```
 
-After the subagent returns, the hook will parse its 5-line report from the Agent tool_result and require D1–D5 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
+After the subagent returns, the hook will parse its 6-line report from the Agent tool_result and require D1–D6 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
 
 ### Step 4: Emit the Report (REQUIRED FORMAT)
 
-Output **exactly five** lines, one per dimension, in this format:
+Output **exactly six** lines, one per dimension, in this format:
 
 ```
 D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
 ```
 
 Where:
-- `{N}` is `1` … `5`
+- `{N}` is `1` … `6`
 - `{VERDICT}` is `CLEAN`, `FIXED`, or `SKIPPED`
 - `{file}` is the path relative to repo root (must be in this push's diff for CLEAN/FIXED)
 - `{line}` is a real line number inside the diff hunks for CLEAN/FIXED; use `0` for SKIPPED
@@ -163,6 +174,7 @@ D2 SKIPPED — hooks/check-push-guard.sh:0 (无 encode/decode/seek 调用)
 D3 CLEAN — hooks/check-push-guard.sh:43 (shlex 输出已是 str，类型契约成立)
 D4 SKIPPED — hooks/check-push-guard.sh:0 (无状态机/dispatcher)
 D5 SKIPPED — hooks/check-push-guard.sh:0 (无密钥/凭据)
+D6 SKIPPED — hooks/check-push-guard.sh:0 (无业务逻辑/计算变更)
 ```
 
 **FIXED format** is the same — cite the file:line you fixed:
