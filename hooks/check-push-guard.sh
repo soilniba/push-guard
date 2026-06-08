@@ -1,6 +1,6 @@
 #!/bin/bash
 # Push Guard: block git push via Claude Bash tool until pre-push-review skill
-# emits a verifiable 6-dimension report with file:line citations inside the diff.
+# emits a verifiable 7-dimension report with file:line citations inside the diff.
 #
 # Hook input arrives via stdin as JSON:
 #   {"tool_name":"Bash","tool_input":{"command":"..."},"transcript_path":"...",...}
@@ -13,7 +13,7 @@
 # file. A bare token write cannot bypass; the hook validates that:
 #   1. push-guard:pre-push-review Skill was invoked since HEAD's commit time
 #   2. The Read tool was used on a file in this push's diff
-#   3. Six dimension cites D1..D6 appear in the assistant text after the
+#   3. Seven dimension cites D1..D7 appear in the assistant text after the
 #      Skill invocation, in the format `D{N} {VERDICT} — {file}:{line} (reason)`
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
 #   5. SKIPPED is only allowed when conservative regex on diff finds no
@@ -394,7 +394,7 @@ if not any(matches_diff_file(rf) for rf in read_files):
 # work; the trailing `:(\d+)\s+\(` anchor pins the non-greedy match to the
 # last `:digits` before the reason paren.
 CITE_RE = re.compile(
-    r'D([1-6])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(.+?):(\d+)\s+\(([^)]{1,200})\)'
+    r'D([1-7])\s+(CLEAN|FIXED|SKIPPED)\s+[—\-]\s+(.+?):(\d+)\s+\(([^)]{1,200})\)'
 )
 
 cites: dict = {}
@@ -409,13 +409,13 @@ for m in CITE_RE.finditer(joined_text):
         'reason': m.group(5),
     }
 
-missing = [d for d in (1, 2, 3, 4, 5, 6) if d not in cites]
+missing = [d for d in (1, 2, 3, 4, 5, 6, 7) if d not in cites]
 if missing:
     miss_list = ', '.join(f'D{d}' for d in missing)
     emit('FAIL',
          f'missing cites for {miss_list}. Required format: '
          f'`D{{N}} {{CLEAN|FIXED|SKIPPED}} — {{file}}:{{line}} ({{reason}})` '
-         f'with all 6 dimensions.')
+         f'with all 7 dimensions.')
 
 # Conservative SKIP-reason grep patterns. SKIPPED is rejected if its
 # dimension's pattern is found in added lines of the diff.
@@ -431,6 +431,12 @@ SKIP_REJECT_PATTERNS = {
     6: re.compile(
         r'\b(price|amount|cost|pnl|return|rate|ratio|percent|quantity)\b'
         r'|\b(round|abs|int|float)\s*\(',
+        re.IGNORECASE,
+    ),
+    7: re.compile(
+        r'\b(test_|assert|mock|patch|unittest|pytest|expect|should|'
+        r'fixture|setUp|tearDown|given|when|then)\b'
+        r'|\bdef test_',
         re.IGNORECASE,
     ),
 }
@@ -467,7 +473,7 @@ for dim, c in cites.items():
 
 # ===== Dual-reviewer gate =====
 # Large diffs require an independent reviewer subagent. Small diffs may use one
-# but don't have to. When a subagent IS present, its 6-dimension verdict must
+# but don't have to. When a subagent IS present, its 7-dimension verdict must
 # agree with the main agent's per-dimension — disagreement means a real risk
 # was spotted by one and missed by the other.
 diff_added_lines = sum(
@@ -485,13 +491,13 @@ diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 # form a complete in-order block are ignored. Multiple complete blocks → the
 # last one wins (re-emission is supported).
 sub_cites: dict = {}
-_seq: list = []  # in-progress 1..6 block being built
+_seq: list = []  # in-progress 1..7 block being built
 for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
     expected = len(_seq) + 1
     if dim == expected:
         _seq.append(m)
-        if len(_seq) == 6:
+        if len(_seq) == 7:
             sub_cites = {
                 int(sm.group(1)): {
                     'verdict': sm.group(2),
@@ -517,14 +523,14 @@ if diff_is_large and not sub_cites:
          f'"{SUBAGENT_SIGNATURE}" — see SKILL.md Step 3.5.')
 
 if sub_cites:
-    sub_missing = [d for d in (1, 2, 3, 4, 5, 6) if d not in sub_cites]
+    sub_missing = [d for d in (1, 2, 3, 4, 5, 6, 7) if d not in sub_cites]
     if sub_missing:
         miss_list = ', '.join(f'D{d}' for d in sub_missing)
         emit('FAIL',
              f'independent reviewer subagent report is missing cites for '
-             f'{miss_list}. Subagent must emit all 6 dimensions in the same '
+             f'{miss_list}. Subagent must emit all 7 dimensions in the same '
              f'format as the main report.')
-    for dim in (1, 2, 3, 4, 5, 6):
+    for dim in (1, 2, 3, 4, 5, 6, 7):
         m_v = cites[dim]['verdict']
         s_v = sub_cites[dim]['verdict']
         if m_v != s_v:
@@ -532,7 +538,7 @@ if sub_cites:
                  f'D{dim} verdict mismatch: main={m_v}, independent={s_v}. '
                  f'Reconcile (fix code or re-examine) and re-emit both reports.')
 
-emit('PASS', 'all 6 cites validated against diff hunks')
+emit('PASS', 'all 7 cites validated against diff hunks')
 PYEOF
 )
 

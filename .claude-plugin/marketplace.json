@@ -7,8 +7,8 @@
   "plugins": [
     {
       "name": "push-guard",
-      "description": "Systematic 6-dimension pre-push code safety review: exception path safety, encoding boundary, data type validation, state invariants, hardcoded secrets, semantic logic correctness. Hook auto-blocks git push until review completes.",
-      "version": "1.5.0",
+      "description": "Systematic 7-dimension pre-push code safety review: exception path safety, encoding boundary, data type validation, state invariants, hardcoded secrets, semantic logic correctness, test quality. Hook auto-blocks git push until review completes.",
+      "version": "1.6.0",
       "source": "./",
       "author": {
         "name": "soilniba"
