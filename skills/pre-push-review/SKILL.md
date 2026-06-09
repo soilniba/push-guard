@@ -24,7 +24,38 @@ You cannot pass by writing a marker, by reciting verdicts without cites, or by c
 
 ---
 
-## The Process
+## Prerequisite: Clean Working Tree
+
+**Before this skill's process begins**, the working tree must be clean. Untracked or unmanaged files interfere with diff analysis and hide real changes.
+
+Run `git status --porcelain` and handle any non-clean entries:
+
+| Status | Action |
+|--------|--------|
+| `??` (untracked) | Ignore (add to `.gitignore`) or commit |
+| `M` / `MM` (modified) | Stage and commit |
+| `A` (staged) | Commit |
+| `D` (deleted) | Stage and commit |
+
+**For files to ignore:**
+```bash
+# Add patterns to .gitignore, then commit
+echo "dist/" >> .gitignore
+git add .gitignore
+git commit -m "chore: update .gitignore"
+```
+
+**For files to track:**
+```bash
+git add <files>
+git commit -m "chore: add untracked files"
+```
+
+After handling, re-check `git status --porcelain` — it must be empty. **Then proceed with the process below.**
+
+> **Why re-check matters:** The hook verifies this skill was invoked *after* the HEAD commit. If you commit files during this step, HEAD changes; you must re-invoke this skill so the hook sees a valid invocation timestamp.
+
+---
 
 ### Step 1: Determine What Changed
 
