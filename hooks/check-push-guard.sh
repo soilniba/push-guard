@@ -1,5 +1,5 @@
 #!/bin/bash
-# Push Guard: block git push via Claude Bash tool until pre-push-review skill
+# Push Guard: block git push via Claude/Codex Bash tool until pre-push-review skill
 # emits a verifiable 7-dimension report with file:line citations inside the diff.
 #
 # Hook input arrives via stdin as JSON:
@@ -9,8 +9,8 @@
 # adjacent to `push` are gated. False positives on quoted strings / heredocs
 # are avoided.
 #
-# Audit reads the Claude Code session transcript directly — there is no marker
-# file. A bare token write cannot bypass; the hook validates that:
+# Audit reads the agent session transcript directly — there is no marker file.
+# A bare token write cannot bypass; the hook validates that:
 #   1. push-guard:pre-push-review Skill was invoked since HEAD's commit time
 #   2. The Read tool was used on a file in this push's diff
 #   3. Seven dimension cites D1..D7 appear in the assistant text after the
@@ -303,21 +303,60 @@ def event_time(e: dict) -> int:
     except Exception:
         return 0
 
-# Find latest Skill invocation of push-guard:pre-push-review since HEAD commit
+# Find latest push-guard:pre-push-review invocation since HEAD commit.
+# Claude records this as a Skill tool call; Codex records plugin skill use as
+# model-visible text, so support both transcript shapes.
 SKILL_NAME = 'push-guard:pre-push-review'
 skill_idx = None
+
+def text_parts(content) -> list[str]:
+    out = []
+    if isinstance(content, str):
+        out.append(content)
+    elif isinstance(content, list):
+        for c in content:
+            if isinstance(c, str):
+                out.append(c)
+            elif isinstance(c, dict):
+                text = c.get('text') or c.get('content')
+                if isinstance(text, str):
+                    out.append(text)
+    return out
+
+def parse_arguments(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def codex_payload(e: dict) -> dict:
+    p = e.get('payload')
+    return p if isinstance(p, dict) else {}
+
 for i, e in enumerate(events):
-    if e.get('type') != 'assistant':
+    if event_time(e) < head_time:
         continue
-    msg = e.get('message') or {}
-    for c in (msg.get('content') or []):
-        if not isinstance(c, dict):
-            continue
-        if c.get('type') == 'tool_use' and c.get('name') == 'Skill':
-            inp = c.get('input') or {}
-            if inp.get('skill') == SKILL_NAME:
-                if event_time(e) >= head_time:
+    if e.get('type') == 'assistant':
+        msg = e.get('message') or {}
+        for c in (msg.get('content') or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get('type') == 'tool_use' and c.get('name') == 'Skill':
+                inp = c.get('input') or {}
+                if inp.get('skill') == SKILL_NAME:
                     skill_idx = i
+            elif c.get('type') == 'text' and SKILL_NAME in (c.get('text') or ''):
+                skill_idx = i
+    elif e.get('type') == 'response_item':
+        p = codex_payload(e)
+        if p.get('type') == 'message' and p.get('role') == 'assistant':
+            if any(SKILL_NAME in t for t in text_parts(p.get('content'))):
+                skill_idx = i
 
 if skill_idx is None:
     emit('FAIL',
@@ -333,6 +372,19 @@ main_texts = []
 sub_texts = []
 read_files = set()
 agent_ids: set = set()
+
+def command_mentions_diff_read(cmd: str) -> set[str]:
+    if not cmd:
+        return set()
+    if not re.search(r'\b(cat|sed|nl|less|head|tail|rg|grep|git\s+show)\b', cmd):
+        return set()
+    found = set()
+    norm_cmd = cmd.replace('\\', '/')
+    for df in diff_files:
+        if df in norm_cmd:
+            found.add(df)
+    return found
+
 for e in events[skill_idx + 1:]:
     etype = e.get('type')
     msg = e.get('message') or {}
@@ -374,6 +426,27 @@ for e in events[skill_idx + 1:]:
                     for sub in content:
                         if isinstance(sub, dict) and sub.get('type') == 'text':
                             sub_texts.append(sub.get('text') or '')
+    elif etype == 'response_item':
+        p = codex_payload(e)
+        ptype = p.get('type')
+        if ptype == 'message' and p.get('role') == 'assistant':
+            main_texts.extend(text_parts(p.get('content')))
+        elif ptype == 'function_call':
+            name = p.get('name') or ''
+            args = parse_arguments(p.get('arguments'))
+            cmd = args.get('cmd') or args.get('command') or ''
+            for df in command_mentions_diff_read(cmd):
+                read_files.add(df)
+            if SUBAGENT_SIGNATURE in json.dumps(args, ensure_ascii=False):
+                aid = p.get('call_id') or p.get('id')
+                if aid:
+                    agent_ids.add(aid)
+        elif ptype == 'function_call_output':
+            cid = p.get('call_id') or p.get('id')
+            if cid in agent_ids:
+                out = p.get('output')
+                if isinstance(out, str):
+                    sub_texts.append(out)
 
 joined_text = '\n'.join(main_texts)
 sub_joined_text = '\n'.join(sub_texts)
@@ -483,7 +556,7 @@ diff_added_lines = sum(
 diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
 
 # Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5→D6 sequence.
-# A subagent is told to emit exactly six lines, but real outputs often contain
+    # A subagent is told to emit exactly seven lines, but real outputs often contain
 # stray CITE_RE-shaped strings: CoT preamble (`先看 D1 ...`) before the block,
 # or FINDINGS bullets after the block that quote `D{N} VERDICT — file:line` as
 # discussion examples. A naive last-wins parse lets such strays override real

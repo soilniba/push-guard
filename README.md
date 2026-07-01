@@ -35,9 +35,25 @@ The hook is a token-level parser — it reads `git -C <path>` from the command a
 
 ## Install
 
+### Claude Code
+
 ```bash
 claude plugin add soilniba/push-guard
 ```
+
+### Codex
+
+Install from a local Codex marketplace that points at this repository, then trust
+the hook in `/hooks`:
+
+```bash
+codex plugin marketplace add /home/wangr/projects/push-guard
+codex plugin add push-guard@push-guard
+```
+
+Codex loads plugin hooks from `hooks/hooks.json`. The hook receives Codex JSON on
+stdin and still blocks `git push` until `push-guard:pre-push-review` has emitted
+the required 7-dimension report.
 
 ## Manual Skill Invocation
 

@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/check-push-guard.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-.}}/hooks/check-push-guard.sh\"",
+            "statusMessage": "Checking push-guard review",
             "async": false
           }
         ]

@@ -9,14 +9,14 @@ description: Use before every git push or PR creation to run a systematic 7-dime
 
 ## When to Use
 
-**Mandatory** — before any `git push` or PR creation. The hook auto-blocks `git push` via Bash tool until this skill runs and emits a valid 6-dimension report with verifiable file:line citations.
+**Mandatory** — before any `git push` or PR creation. The hook auto-blocks `git push` via Bash tool until this skill runs and emits a valid 7-dimension report with verifiable file:line citations.
 
 ## Anti-Bypass Notice
 
 The hook does **not** trust a marker file or self-attestation. It reads the Claude Code session transcript and verifies:
 
 1. This skill was actually invoked since the HEAD commit
-2. The 6-dimension report was emitted in the required format (below)
+2. The 7-dimension report was emitted in the required format (below)
 3. Every CLEAN/FIXED cite points to a `file:line` that is **inside this push's diff**
 4. SKIPPED dimensions are only allowed when the diff genuinely contains no patterns matching that dimension
 
@@ -73,7 +73,7 @@ Note which **files + functions + line ranges** are touched. You will need real l
 
 Use the `Read` tool to open every modified file at the relevant line ranges. The hook also verifies that at least one `Read` call landed on a modified file — pure-text cites without reading anything will be rejected.
 
-### Step 3: Run 5-Dimension Scan
+### Step 3: Run 7-Dimension Scan
 
 For each modified function, work through every checklist item. If any answer is "no" or "unknown": fix the code (or add a test) before continuing.
 
@@ -148,7 +148,7 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 ### Step 3.5: Independent Reviewer Subagent (REQUIRED for large diffs)
 
-The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 6-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
+The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 7-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
 
 **Why:** the same agent that wrote the code also reviews it. A fresh-context subagent reading the diff cold catches blind spots that confirmation bias missed. Verdict agreement across two independent passes is much stronger evidence than a single self-review.
 
@@ -191,7 +191,7 @@ Process:
   4. Output the seven lines. No preamble, no summary, no extra text.
 ```
 
-After the subagent returns, the hook will parse its 6-line report from the Agent tool_result and require D1–D6 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
+After the subagent returns, the hook will parse its 7-line report from the Agent tool_result and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
 
 ### Step 4: Emit the Report (REQUIRED FORMAT)
 
@@ -202,7 +202,7 @@ D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
 ```
 
 Where:
-- `{N}` is `1` … `6`
+- `{N}` is `1` ... `7`
 - `{VERDICT}` is `CLEAN`, `FIXED`, or `SKIPPED`
 - `{file}` is the path relative to repo root (must be in this push's diff for CLEAN/FIXED)
 - `{line}` is a real line number inside the diff hunks for CLEAN/FIXED; use `0` for SKIPPED
@@ -245,6 +245,6 @@ If the hook denies, the rejection reason will name the specific cite or check th
 **Never:**
 - Mark CLEAN without a real `file:line` cite that's inside the diff hunk
 - Mark SKIPPED for a dimension whose patterns appear in the diff (the hook will catch this)
-- Emit the 5 lines without actually `Read`-ing any modified file (the hook checks for Read tool calls)
+- Emit the 7 lines without actually reading any modified file (the hook checks for Read/Codex shell read calls)
 - Recite the format from memory without re-running the actual scan against the current diff
 - Ask the user to manually approve a known-broken cite to bypass the audit

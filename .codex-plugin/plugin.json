@@ -1,0 +1,38 @@
+{
+  "name": "push-guard",
+  "version": "1.7.0+codex.20260701192824",
+  "description": "Pre-push code safety review skill and hook for Codex and Claude Code.",
+  "author": {
+    "name": "soilniba"
+  },
+  "homepage": "https://github.com/soilniba/push-guard",
+  "repository": "https://github.com/soilniba/push-guard",
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "pre-push",
+    "safety",
+    "hooks",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Push Guard",
+    "shortDescription": "Block git push until a structured safety review is present",
+    "longDescription": "Push Guard provides a pre-push review skill and lifecycle hook that checks modified code across exception paths, encoding boundaries, external data validation, state invariants, secrets, semantic correctness, and test quality before git push.",
+    "developerName": "soilniba",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/soilniba/push-guard",
+    "privacyPolicyURL": "https://github.com/soilniba/push-guard",
+    "termsOfServiceURL": "https://github.com/soilniba/push-guard",
+    "defaultPrompt": [
+      "Run a pre-push safety review for this repository"
+    ],
+    "brandColor": "#DC2626",
+    "screenshots": []
+  }
+}
