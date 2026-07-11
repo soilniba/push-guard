@@ -157,7 +157,7 @@ The hook treats a diff as **large** when it adds more than 30 lines OR touches m
 **How to spawn:**
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below. Copy it literally; the bracketed signature on the first line is mandatory.
-- **Codex:** invoke `collaboration.spawn_agent` with `task_name: "push_guard_independent"` and `fork_turns: "none"`, using the same prompt below as `message`. The hook verifies this isolated spawn, its ACK, and the returning agent message as one chain.
+- **Codex:** invoke `collaboration.spawn_agent` with `task_name: "push_guard_independent"` and `fork_turns: "none"`, using the same prompt below as `message`. If that task name was already used in this session, use the next numeric round name such as `"push_guard_independent_2"`. The hook verifies this isolated spawn, its ACK, and the returning agent message as one chain.
 
 Use this review prompt:
 

@@ -369,10 +369,11 @@ if skill_idx is None:
 # as agent_message, so both transcript shapes must be handled.
 SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
 # Codex encrypts the spawn message in its transcript, so unlike Claude we
-# cannot inspect it for SUBAGENT_SIGNATURE.  The fixed, isolated task name is
-# its transcript-level review identity; an ACK for the same call must then
-# establish the canonical agent path before a report is accepted.
-CODEX_INDEPENDENT_TASK = 'push_guard_independent'
+# cannot inspect it for SUBAGENT_SIGNATURE.  A reserved, isolated task name
+# (optionally with a numeric round suffix) is its transcript-level review
+# identity; an ACK for the same call must then establish the canonical agent
+# path before a report is accepted.
+CODEX_INDEPENDENT_TASK_RE = re.compile(r'^push_guard_independent(?:_[1-9][0-9]*)?$')
 main_texts = []
 sub_texts = []
 read_files = set()
@@ -391,6 +392,9 @@ def command_mentions_diff_read(cmd: str) -> set[str]:
         if df in norm_cmd:
             found.add(df)
     return found
+
+def is_codex_independent_task(task_name) -> bool:
+    return isinstance(task_name, str) and bool(CODEX_INDEPENDENT_TASK_RE.fullmatch(task_name))
 
 def code_marker_positions(source: str, marker: str):
     """Yield marker positions outside simple JavaScript strings/comments."""
@@ -517,7 +521,7 @@ for i, e in enumerate(events[skill_idx + 1:], skill_idx + 1):
             if (
                 name == 'spawn_agent'
                 and p.get('namespace') == 'collaboration'
-                and args.get('task_name') == CODEX_INDEPENDENT_TASK
+                and is_codex_independent_task(args.get('task_name'))
                 and args.get('fork_turns') == 'none'
             ):
                 aid = p.get('call_id') or p.get('id')
@@ -536,7 +540,7 @@ for i, e in enumerate(events[skill_idx + 1:], skill_idx + 1):
                     i > codex_pending_agents[cid]
                     and isinstance(task_name, str)
                     and '/' in task_name
-                    and task_name.rsplit('/', 1)[-1] == CODEX_INDEPENDENT_TASK
+                    and is_codex_independent_task(task_name.rsplit('/', 1)[-1])
                 ):
                     codex_independent_agents[task_name] = i
         elif ptype == 'custom_tool_call' and p.get('name') == 'exec':
