@@ -51,9 +51,9 @@ codex plugin marketplace add /home/wangr/projects/push-guard
 codex plugin add push-guard@push-guard
 ```
 
-Codex loads plugin hooks from `hooks/hooks.json`. The hook receives Codex JSON on
-stdin and still blocks `git push` until `push-guard:pre-push-review` has emitted
-the required 7-dimension report.
+Codex loads plugin hooks from `hooks/hooks.json`. The hook reads both standard and
+`custom_tool_call` Codex transcript events, then blocks `git push` until
+`push-guard:pre-push-review` has emitted the required 7-dimension report.
 
 ## Manual Skill Invocation
 

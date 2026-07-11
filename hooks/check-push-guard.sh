@@ -364,14 +364,21 @@ if skill_idx is None:
          f'Run the skill, do the scan, then push.')
 
 # Collect main-agent assistant text + Read tool calls + independent reviewer
-# subagent invocations (Agent tool_use with our signature) AFTER the skill
-# invocation. Subagent reports come back as Agent tool_result events on the
-# user side; collect those separately so cites are parsed independently.
+# subagent invocations AFTER the skill invocation. Claude uses Read/Agent
+# events; Codex may record terminal calls as custom_tool_call and agent results
+# as agent_message, so both transcript shapes must be handled.
 SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
+# Codex encrypts the spawn message in its transcript, so unlike Claude we
+# cannot inspect it for SUBAGENT_SIGNATURE.  The fixed, isolated task name is
+# its transcript-level review identity; an ACK for the same call must then
+# establish the canonical agent path before a report is accepted.
+CODEX_INDEPENDENT_TASK = 'push_guard_independent'
 main_texts = []
 sub_texts = []
 read_files = set()
 agent_ids: set = set()
+codex_pending_agents: dict = {}
+codex_independent_agents: dict = {}
 
 def command_mentions_diff_read(cmd: str) -> set[str]:
     if not cmd:
@@ -385,7 +392,77 @@ def command_mentions_diff_read(cmd: str) -> set[str]:
             found.add(df)
     return found
 
-for e in events[skill_idx + 1:]:
+def code_marker_positions(source: str, marker: str):
+    """Yield marker positions outside simple JavaScript strings/comments."""
+    index = 0
+    quote = None
+    while index < len(source):
+        char = source[index]
+        if quote:
+            if char == '\\':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if source.startswith('//', index):
+            newline = source.find('\n', index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith('/*', index):
+            end = source.find('*/', index + 2)
+            index = len(source) if end < 0 else end + 2
+            continue
+        if char in ("'", '"', '`'):
+            quote = char
+            index += 1
+            continue
+        if source.startswith(marker, index):
+            before = source[index - 1] if index else ''
+            after = index + len(marker)
+            next_char = source[after] if after < len(source) else ''
+            if (
+                (not before or not (before.isalnum() or before in '_$.'))
+                and (not next_char or next_char.isspace() or next_char == '(')
+            ):
+                yield index
+            index = after
+            continue
+        index += 1
+
+def custom_tool_commands(payload: dict) -> list[str]:
+    """Extract literal cmd values from Codex's nested exec wrapper source."""
+    if payload.get('name') != 'exec' or payload.get('status') != 'completed':
+        return []
+    source = payload.get('input')
+    if not isinstance(source, str):
+        return []
+
+    commands = []
+    marker = 'tools.exec_command'
+    decoder = json.JSONDecoder()
+    for call_start in code_marker_positions(source, marker):
+        open_paren = call_start + len(marker)
+        while open_paren < len(source) and source[open_paren].isspace():
+            open_paren += 1
+        if open_paren >= len(source) or source[open_paren] != '(':
+            continue
+        argument_start = open_paren + 1
+        while argument_start < len(source) and source[argument_start].isspace():
+            argument_start += 1
+        try:
+            args, argument_end = decoder.raw_decode(source, argument_start)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(args, dict) or not source[argument_end:].lstrip().startswith(')'):
+            continue
+        command = args.get('cmd') or args.get('command') or ''
+        if isinstance(command, str):
+            commands.append(command)
+    return commands
+
+for i, e in enumerate(events[skill_idx + 1:], skill_idx + 1):
     etype = e.get('type')
     msg = e.get('message') or {}
     if etype == 'assistant':
@@ -437,16 +514,51 @@ for e in events[skill_idx + 1:]:
             cmd = args.get('cmd') or args.get('command') or ''
             for df in command_mentions_diff_read(cmd):
                 read_files.add(df)
-            if SUBAGENT_SIGNATURE in json.dumps(args, ensure_ascii=False):
+            if (
+                name == 'spawn_agent'
+                and p.get('namespace') == 'collaboration'
+                and args.get('task_name') == CODEX_INDEPENDENT_TASK
+                and args.get('fork_turns') == 'none'
+            ):
                 aid = p.get('call_id') or p.get('id')
                 if aid:
-                    agent_ids.add(aid)
+                    codex_pending_agents[aid] = i
         elif ptype == 'function_call_output':
             cid = p.get('call_id') or p.get('id')
             if cid in agent_ids:
                 out = p.get('output')
                 if isinstance(out, str):
                     sub_texts.append(out)
+            if cid in codex_pending_agents:
+                ack = parse_arguments(p.get('output'))
+                task_name = ack.get('task_name')
+                if (
+                    i > codex_pending_agents[cid]
+                    and isinstance(task_name, str)
+                    and '/' in task_name
+                    and task_name.rsplit('/', 1)[-1] == CODEX_INDEPENDENT_TASK
+                ):
+                    codex_independent_agents[task_name] = i
+        elif ptype == 'custom_tool_call' and p.get('name') == 'exec':
+            for cmd in custom_tool_commands(p):
+                for df in command_mentions_diff_read(cmd):
+                    read_files.add(df)
+        elif ptype == 'agent_message':
+            author = p.get('author') or ''
+            recipient = p.get('recipient') or ''
+            registered_at = codex_independent_agents.get(author)
+            if (
+                registered_at is not None
+                and i > registered_at
+                and recipient == author.rsplit('/', 1)[0]
+            ):
+                for content in p.get('content') or []:
+                    if (
+                        isinstance(content, dict)
+                        and content.get('type') == 'input_text'
+                        and isinstance(content.get('text'), str)
+                    ):
+                        sub_texts.append(content['text'])
 
 joined_text = '\n'.join(main_texts)
 sub_joined_text = '\n'.join(sub_texts)

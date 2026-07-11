@@ -154,9 +154,12 @@ The hook treats a diff as **large** when it adds more than 30 lines OR touches m
 
 **Small diffs** (≤30 added lines AND ≤2 files): subagent is optional, but if you spawn one its verdict still must agree.
 
-**How to spawn (verbatim template — the signature is what the hook looks for):**
+**How to spawn:**
 
-Invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below (copy literally; the bracketed signature on the first line is mandatory):
+- **Claude Code:** invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below. Copy it literally; the bracketed signature on the first line is mandatory.
+- **Codex:** invoke `collaboration.spawn_agent` with `task_name: "push_guard_independent"` and `fork_turns: "none"`, using the same prompt below as `message`. The hook verifies this isolated spawn, its ACK, and the returning agent message as one chain.
+
+Use this review prompt:
 
 ```
 [PUSH-GUARD-INDEPENDENT-REVIEW v1]
@@ -191,7 +194,7 @@ Process:
   4. Output the seven lines. No preamble, no summary, no extra text.
 ```
 
-After the subagent returns, the hook will parse its 7-line report from the Agent tool_result and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
+After the subagent returns, the hook will parse its 7-line report from the Claude `Agent` tool_result or Codex agent message and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
 
 ### Step 4: Emit the Report (REQUIRED FORMAT)
 
