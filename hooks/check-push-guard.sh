@@ -84,9 +84,13 @@ while i < len(toks):
             break
     i += 1
 
-def emit(ref: str) -> None:
+push_remote = ''
+
+def emit(ref: str, destination: str = '') -> None:
     print(ref)
     print(git_C_path)
+    print(push_remote)
+    print(destination)
     raise SystemExit(0)
 
 if push_args is None:
@@ -100,37 +104,44 @@ VALUE_OPTS = {'-o', '--push-option', '--repo', '--receive-pack', '--exec', '--si
 positional = []
 skip_next = False
 saw_repo_flag = False
-for t in push_args:
+for idx, t in enumerate(push_args):
     if skip_next:
         skip_next = False
         continue
     if t in VALUE_OPTS:
         if t == '--repo':
             saw_repo_flag = True
+            if idx + 1 < len(push_args):
+                push_remote = push_args[idx + 1]
         skip_next = True
         continue
     if t.startswith('--repo='):
         saw_repo_flag = True
+        push_remote = t.split('=', 1)[1]
         continue
     if t.startswith('-'):
         continue
     positional.append(t)
 
 refspec_idx = 0 if saw_repo_flag else 1
+if not saw_repo_flag and positional:
+    push_remote = positional[0]
 if len(positional) <= refspec_idx:
     emit('HEAD')
 else:
     refspec = positional[refspec_idx]
     if ':' in refspec:
-        src = refspec.split(':', 1)[0]
-        emit('__DELETE__' if not src else src)
+        src, destination = refspec.split(':', 1)
+        emit('__DELETE__' if not src else src, destination)
     else:
-        emit(refspec)
+        emit(refspec, refspec)
 PYEOF
 )
 
 LOCAL_REF=$(printf '%s\n' "$RESULT" | sed -n '1p')
 GIT_C_PATH=$(printf '%s\n' "$RESULT" | sed -n '2p')
+PUSH_REMOTE=$(printf '%s\n' "$RESULT" | sed -n '3p')
+PUSH_DEST=$(printf '%s\n' "$RESULT" | sed -n '4p')
 
 if [ "$LOCAL_REF" = "__NO_PUSH__" ] || [ "$LOCAL_REF" = "__DRY_RUN__" ]; then
     exit 0
@@ -158,7 +169,8 @@ if [ -z "$TARGET_SHA" ]; then
 fi
 
 # ===== Stage 3: transcript audit =====
-AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" python3 <<'PYEOF'
+AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" \
+    LOCAL_REF="$LOCAL_REF" PUSH_REMOTE="$PUSH_REMOTE" PUSH_DEST="$PUSH_DEST" python3 <<'PYEOF'
 import os, json, re, glob, subprocess, sys
 from datetime import datetime
 
@@ -174,6 +186,9 @@ except Exception as e:
 
 target_sha = os.environ.get('TARGET_SHA', '')
 git_c_path = os.environ.get('GIT_C_PATH', '')
+local_ref = os.environ.get('LOCAL_REF', '')
+push_remote = os.environ.get('PUSH_REMOTE', '')
+push_dest = os.environ.get('PUSH_DEST', '')
 transcript_path = hook_input.get('transcript_path', '')
 
 if not transcript_path:
@@ -214,20 +229,70 @@ def git(*args) -> str:
 ct = git('show', '-s', '--format=%ct', target_sha).strip()
 head_time = int(ct) if ct.isdigit() else 0
 
-# Resolve diff base
+# Resolve the diff base from the remote state, not the local main/master branch.
+# A local base branch can point at target_sha itself, which would make the hook
+# report "no new commits" without auditing the target. The push parser supplies
+# the remote and destination when available; upstream/default remote refs cover
+# `git push` and first pushes of a new branch.
+def valid_remote_ref(ref: str) -> str:
+    if not ref or not ref.startswith('refs/remotes/'):
+        return ''
+    resolved = git('rev-parse', '--verify', ref).strip()
+    return resolved if resolved else ''
+
+def remote_branch_ref(remote: str, branch: str) -> str:
+    if branch.startswith('refs/heads/'):
+        branch = branch[len('refs/heads/'):]
+    if not remote or not branch or branch in ('HEAD', 'refs/heads/HEAD'):
+        return ''
+    return valid_remote_ref(f'refs/remotes/{remote}/{branch}')
+
+def remote_default_ref(remote: str) -> str:
+    if not remote:
+        return ''
+    symbolic = git('symbolic-ref', '--quiet', '--short',
+                   f'refs/remotes/{remote}/HEAD').strip()
+    if not symbolic.startswith(f'{remote}/'):
+        return ''
+    return valid_remote_ref(f'refs/remotes/{symbolic}')
+
+def upstream_ref(branch: str) -> str:
+    if not branch or branch == 'HEAD':
+        return ''
+    symbolic = git('rev-parse', '--abbrev-ref', '--symbolic-full-name',
+                   f'{branch}@{{upstream}}').strip()
+    if symbolic.startswith('refs/remotes/'):
+        return valid_remote_ref(symbolic)
+    if '/' in symbolic and not symbolic.startswith('refs/'):
+        remote, remote_branch = symbolic.split('/', 1)
+        return remote_branch_ref(remote, remote_branch)
+    return ''
+
 def find_base() -> str:
-    for ref in ('main', 'master'):
-        b = git('merge-base', target_sha, ref).strip()
-        if b:
-            return b
-    # First commit fallback
-    roots = git('rev-list', '--max-parents=0', target_sha).strip().split('\n')
-    return roots[0] if roots and roots[0] else ''
+    current_branch = git('symbolic-ref', '--quiet', '--short', 'HEAD').strip()
+    candidates = []
+
+    if push_remote and push_dest:
+        candidates.append(remote_branch_ref(push_remote, push_dest))
+    if push_remote:
+        candidates.append(remote_default_ref(push_remote))
+    candidates.append(upstream_ref(local_ref if local_ref != 'HEAD' else current_branch))
+
+    for remote in git('remote').splitlines():
+        candidates.append(remote_default_ref(remote.strip()))
+
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return ''
 
 base = find_base()
 if not base:
-    # No base means initial commit with nothing to diff against — allow push.
-    emit('PASS', 'no diff base; nothing to review')
+    # Review a first push against the empty tree instead of treating the
+    # absence of a remote-tracking ref as permission to bypass the gate.
+    base = git('hash-object', '-t', 'tree', '/dev/null').strip()
+    if not base:
+        emit('FAIL', 'cannot resolve a diff base or the empty tree')
 
 if base == target_sha:
     # Pushing already-pushed work, no new diff to review.

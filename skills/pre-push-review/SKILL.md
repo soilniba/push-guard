@@ -60,11 +60,16 @@ After handling, re-check `git status --porcelain` — it must be empty. **Then p
 ### Step 1: Determine What Changed
 
 ```bash
-# Diff against merge base with main/master (handles single + multi-commit branches)
-git diff $(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null) HEAD --stat
+# Diff against the remote-tracking branch that will receive the push.
+# If the branch has no upstream, use the remote's default branch; for a first
+# push with neither ref, use the empty tree so the review is not skipped.
+BASE_REF=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null \
+  || git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+  || git hash-object -t tree /dev/null)
+git diff "$BASE_REF" HEAD --stat
 
 # Or for the actual hunks (you'll need line numbers for cites):
-git diff $(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null) HEAD
+git diff "$BASE_REF" HEAD
 ```
 
 Note which **files + functions + line ranges** are touched. You will need real line numbers from these hunks for the citations.
@@ -169,7 +174,7 @@ conversation, NO access to project memory, and you MUST NOT invoke any Skill,
 MUST NOT read ~/.claude/CLAUDE.md, MUST NOT read project memory files under
 .claude/projects/*/memory/, and MUST NOT read .claude/settings.json.
 
-Your job: scan the diff at HEAD against its merge-base with main/master, then
+Your job: scan the diff at HEAD against the remote-tracking base for the push, then
 emit exactly seven lines in this format:
 
   D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
@@ -187,11 +192,13 @@ The seven dimensions:
   D7 — Test quality (SKIPPED if no test files or test-related code)
 
 Process:
-  1. Run: git diff $(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null) HEAD
-  2. Read each modified file at the touched line ranges using the Read tool.
-  3. For each dimension, decide CLEAN / FIXED / SKIPPED on the merits — do NOT
+  1. Resolve `BASE_REF` from `@{upstream}`, then the remote default branch, then
+     `git hash-object -t tree /dev/null` when no remote-tracking ref exists.
+  2. Run: `git diff "$BASE_REF" HEAD`
+  3. Read each modified file at the touched line ranges using the Read tool.
+  4. For each dimension, decide CLEAN / FIXED / SKIPPED on the merits — do NOT
      defer to or read any prior review.
-  4. Output the seven lines. No preamble, no summary, no extra text.
+  5. Output the seven lines. No preamble, no summary, no extra text.
 ```
 
 After the subagent returns, the hook will parse its 7-line report from the Claude `Agent` tool_result or Codex agent message and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.

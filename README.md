@@ -2,7 +2,11 @@
 
 Pre-push code safety review plugin for Claude Code. Works with any language.
 
-Automatically blocks `git push` (executed via Claude's Bash tool) until a systematic 4-dimension code review is completed.
+Automatically blocks `git push` (executed via Claude's Bash tool) until a systematic 7-dimension code review is completed.
+
+## 文档
+
+设计、需求原文和开发记录见 [docs/README.md](docs/README.md)。
 
 ## What It Checks
 
@@ -12,19 +16,21 @@ Automatically blocks `git push` (executed via Claude's Bash tool) until a system
 | 2. I/O encoding boundary | No `seek + decode` landing mid-UTF-8 char; no truncated chunked reads |
 | 3. External data type validation | `json.loads` / API responses / env vars validated before field access |
 | 4. State / invariant completeness | All fields set on state transition; dispatchers fully registered |
+| 5. Hardcoded secrets | No credentials, tokens, or private keys in committed code |
+| 6. Semantic logic correctness | Variables, units, formulas, and return values match their meaning |
+| 7. Test quality | Tests exercise real behavior, boundaries, and failure paths |
 
 ## How It Works
 
 1. `PreToolUse` hook intercepts every Bash tool call
-2. If the command contains `git push`, the hook parses the refspec to identify the local ref being pushed and resolves it to a commit SHA
-3. The hook reads `/tmp/pre-push-review-done`. If absent **or** if its content does not equal the target ref's SHA → **blocks push**, prompts to run skill
-4. Run `push-guard:pre-push-review` → skill guides the dimension-by-dimension scan, then writes the HEAD SHA into the marker via `git rev-parse HEAD > /tmp/pre-push-review-done`
-5. Hook consumes (deletes) the marker on every check
-6. **Every push requires its own review** — the token is single-use, and amending or adding new commits invalidates the marker (SHA changes), forcing a fresh review
+2. If the command contains `git push`, the hook resolves the target commit and the remote-tracking diff base
+3. The hook reads the session transcript and verifies the skill invocation, modified-file read, and 7-dimension report
+4. Missing or invalid evidence blocks the push
+5. Every new target commit is checked against the remote-tracking base; if no base exists, the target is checked against the empty tree
 
-### Why content-validated?
+### Why remote-tracking based?
 
-Earlier versions used file-existence as the gate, which a bare `touch /tmp/pre-push-review-done` could bypass — including accidental cases where the marker-creation command was chained (`touch ... && git push`) in a single Bash call, producing no real review window. Tying the marker to the HEAD SHA closes that loop: the marker can only be produced from inside the working tree, after the commit being pushed exists, and is invalidated the moment HEAD moves.
+Using the local `main`/`master` branch as the merge-base makes a push from that branch compare HEAD with itself and skip the review. The hook instead uses the remote-tracking branch for the push target, such as `origin/main` or `origin/master`.
 
 ### Pushing from a different repo: use `git -C`, not `cd &&`
 
