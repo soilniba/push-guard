@@ -193,6 +193,17 @@ The seven dimensions:
   D6 — Semantic logic correctness (SKIPPED if no business logic changes)
   D7 — Test quality (SKIPPED if no test files or test-related code)
 
+Scope and budget (hard limits):
+  - The diff is your whole input. Project context is withheld on purpose, so do
+    not go looking for it: no `git log` / `git blame`, no repo-wide grep, no
+    reading docs / README / CLAUDE.md / settings, no running tests or builds, no
+    edits, no fixes.
+  - Budget: one call to produce the diff, plus at most one Read per file the diff
+    touches. Nothing else. Read with offset/limit around the touched ranges —
+    never read a whole file just to see it.
+  - Do not investigate a dimension you cannot judge from the diff. Say why in its
+    reason and move on.
+
 Process:
   1. Resolve `BASE_REF` from `@{upstream}`, then the remote default branch, then
      `git hash-object -t tree /dev/null` when no remote-tracking ref exists.
@@ -200,7 +211,8 @@ Process:
   3. Read each modified file at the touched line ranges using the Read tool.
   4. For each dimension, decide CLEAN / FIXED / SKIPPED on the merits — do NOT
      defer to or read any prior review.
-  5. Output the seven lines. No preamble, no summary, no extra text.
+  5. Output the seven lines and stop. No preamble, no per-dimension analysis, no
+     summary, no recommendations.
 ```
 
 After the subagent returns, the hook will parse its 7-line report from the Claude `Agent` tool_result or Codex agent message and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.

@@ -31,9 +31,14 @@ import os, json, shlex
 
 try:
     d = json.loads(os.environ.get('HOOK_INPUT', ''))
-    cmd = d.get('tool_input', {}).get('command', '')
+    cmd = d['tool_input']['command']
+    if not isinstance(cmd, str):
+        raise TypeError('command is not a string')
 except Exception:
-    print('__NO_PUSH__'); raise SystemExit(0)
+    # Could not read the command at all — bad JSON, or an input shape this hook
+    # does not understand. That is NOT the same as "not a push", so it must not
+    # be answered with __NO_PUSH__; the Bash side fails closed on it instead.
+    print('__UNPARSED__'); raise SystemExit(0)
 
 try:
     toks = shlex.split(cmd)
@@ -146,6 +151,32 @@ LOCAL_REF=$(printf '%s\n' "$RESULT" | sed -n '1p')
 GIT_C_PATH=$(printf '%s\n' "$RESULT" | sed -n '2p')
 PUSH_REMOTE=$(printf '%s\n' "$RESULT" | sed -n '3p')
 PUSH_DEST=$(printf '%s\n' "$RESULT" | sed -n '4p')
+
+# ===== Stage 1b: fail closed when stage 1 produced no answer =====
+# Stage 1 is python3. An empty result means python3 is unavailable or the stage
+# died without printing; __UNPARSED__ means it could not read the command.
+# Neither is a "not a push" verdict, and answering them with "allow" would turn
+# a broken hook environment into an open gate. Scan the raw hook input instead
+# and fail closed. The pattern refuses to cross shell separators or quotes, so
+# prose like `git commit -m "fix push"` is not caught; text that literally reads
+# like a push can still over-block, which is the intended direction here.
+#
+# The test uses bash's own ERE engine rather than grep: a missing external tool
+# must not be able to turn this fallback into yet another open door.
+if [ -z "$LOCAL_REF" ] || [ "$LOCAL_REF" = "__UNPARSED__" ]; then
+    PUSH_RE='git[^|;&"]*[[:space:]]push([^[:alnum:]_-]|$)'
+    if [[ "$HOOK_INPUT" =~ $PUSH_RE ]]; then
+        printf '%s' '{
+  "systemMessage": "⛔ push-guard: command could not be parsed (python3 missing, or unreadable hook input) — push blocked instead of allowed unreviewed.",
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "push-guard could not determine whether this command is a push: stage 1 needs python3 on PATH to parse the command, and it produced no verdict. The command text reads like a push, so the push is blocked rather than allowed unreviewed. Fix the hook environment (python3 on PATH) and retry."
+  }
+}'
+    fi
+    exit 0
+fi
 
 if [ "$LOCAL_REF" = "__NO_PUSH__" ] || [ "$LOCAL_REF" = "__DRY_RUN__" ]; then
     exit 0
@@ -692,8 +723,13 @@ SKIP_REJECT_PATTERNS = {
         re.IGNORECASE,
     ),
     7: re.compile(
+        # given|when|then are deliberately absent: they are BDD words, but they
+        # are also plain English and shell syntax (`if ...; then`), so they
+        # rejected honest SKIPPED verdicts on shell diffs — and since the
+        # independent reviewer also reports SKIPPED for a no-test diff, the two
+        # reports could never agree. Everything else in the list is unchanged.
         r'\b(test_|assert|mock|patch|unittest|pytest|expect|should|'
-        r'fixture|setUp|tearDown|given|when|then)\b'
+        r'fixture|setUp|tearDown)\b'
         r'|\bdef test_',
         re.IGNORECASE,
     ),
@@ -802,6 +838,12 @@ PYEOF
 
 AUDIT_VERDICT=$(printf '%s\n' "$AUDIT_OUTPUT" | sed -n '1p')
 AUDIT_REASON=$(printf '%s\n' "$AUDIT_OUTPUT" | sed -n '2,$p')
+
+# A verdict always carries a reason on every emit() path; an empty one means the
+# audit stage crashed. Say so instead of denying with a blank explanation.
+if [ -z "$AUDIT_REASON" ]; then
+    AUDIT_REASON="the audit stage produced no verdict (hook internal failure); retry, or inspect the hook."
+fi
 
 if [ "$AUDIT_VERDICT" = "PASS" ]; then
     exit 0
