@@ -25,8 +25,13 @@
 
 HOOK_INPUT=$(cat)
 
+# Interpreter for stages 1 and 3. Windows ships `python`, not `python3`, so
+# accept either; if neither exists PYTHON_BIN stays empty and the stages fail
+# closed (Stage 1b below).
+PYTHON_BIN=$(command -v python3 || command -v python)
+
 # ===== Stage 1: detect git push =====
-RESULT=$(HOOK_INPUT="$HOOK_INPUT" python3 <<'PYEOF'
+RESULT=$(HOOK_INPUT="$HOOK_INPUT" PYTHONIOENCODING=utf-8 "$PYTHON_BIN" <<'PYEOF'
 import os, json, shlex
 
 try:
@@ -153,8 +158,9 @@ PUSH_REMOTE=$(printf '%s\n' "$RESULT" | sed -n '3p')
 PUSH_DEST=$(printf '%s\n' "$RESULT" | sed -n '4p')
 
 # ===== Stage 1b: fail closed when stage 1 produced no answer =====
-# Stage 1 is python3. An empty result means python3 is unavailable or the stage
-# died without printing; __UNPARSED__ means it could not read the command.
+# Stage 1 is python (python3 or python). An empty result means no interpreter is
+# available or the stage died without printing; __UNPARSED__ means it could not
+# read the command.
 # Neither is a "not a push" verdict, and answering them with "allow" would turn
 # a broken hook environment into an open gate. Scan the raw hook input instead
 # and fail closed. The pattern refuses to cross shell separators or quotes, so
@@ -167,11 +173,11 @@ if [ -z "$LOCAL_REF" ] || [ "$LOCAL_REF" = "__UNPARSED__" ]; then
     PUSH_RE='git[^|;&"]*[[:space:]]push([^[:alnum:]_-]|$)'
     if [[ "$HOOK_INPUT" =~ $PUSH_RE ]]; then
         printf '%s' '{
-  "systemMessage": "⛔ push-guard: command could not be parsed (python3 missing, or unreadable hook input) — push blocked instead of allowed unreviewed.",
+  "systemMessage": "⛔ push-guard: command could not be parsed (no python3/python on PATH, or unreadable hook input) — push blocked instead of allowed unreviewed.",
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "push-guard could not determine whether this command is a push: stage 1 needs python3 on PATH to parse the command, and it produced no verdict. The command text reads like a push, so the push is blocked rather than allowed unreviewed. Fix the hook environment (python3 on PATH) and retry."
+    "permissionDecisionReason": "push-guard could not determine whether this command is a push: stage 1 needs python3 or python on PATH to parse the command, and it produced no verdict. The command text reads like a push, so the push is blocked rather than allowed unreviewed. Fix the hook environment (python3 or python on PATH) and retry."
   }
 }'
     fi
@@ -205,7 +211,8 @@ fi
 
 # ===== Stage 3: transcript audit =====
 AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" \
-    LOCAL_REF="$LOCAL_REF" PUSH_REMOTE="$PUSH_REMOTE" PUSH_DEST="$PUSH_DEST" python3 <<'PYEOF'
+    LOCAL_REF="$LOCAL_REF" PUSH_REMOTE="$PUSH_REMOTE" PUSH_DEST="$PUSH_DEST" \
+    PYTHONIOENCODING=utf-8 "$PYTHON_BIN" <<'PYEOF'
 import os, json, re, glob, subprocess, sys
 from datetime import datetime
 
@@ -256,7 +263,11 @@ def git(*args) -> str:
         cmd += ['-C', git_c_path]
     cmd += list(args)
     try:
-        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+        # Explicit UTF-8: git output is UTF-8 (commit messages, paths), while the
+        # locale default is GBK on Chinese Windows — decoding with it raises
+        # UnicodeDecodeError and takes the whole audit down.
+        return subprocess.check_output(cmd, text=True, encoding='utf-8',
+                                       errors='replace', stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         return ''
 
@@ -373,7 +384,7 @@ added_lines = '\n'.join(
 # Read transcript JSONL
 events = []
 try:
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding='utf-8', errors='replace') as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -886,7 +897,13 @@ fi
 # Deny, but hand the decision to the user: running the review is no longer
 # automatic. The push stays blocked until the review passes, so declining the
 # review can only end in an abandon, never in an unreviewed push.
-REASON="$AUDIT_REASON" python3 -c "
+#
+# This script is passed through `-c`, and `-c` is decoded with the locale
+# encoding — NOT with Python's usual UTF-8 source rule. One literal non-ASCII
+# character here therefore kills the emitter outright on a GBK/ASCII locale,
+# and a dead hook is a silent allow. Keep the script ASCII-only: write the
+# emoji and the em dash as \u escapes (json.dumps emits them escaped anyway).
+REASON="$AUDIT_REASON" PYTHONIOENCODING=utf-8 "$PYTHON_BIN" -c "
 import json, os
 reason = os.environ.get('REASON', '')
 ask = (
@@ -901,7 +918,7 @@ ask = (
     'Audit detail: '
 )
 print(json.dumps({
-    'systemMessage': '⏸️ push-guard: unreviewed push paused — waiting for your choice (review / abandon). ' + reason,
+    'systemMessage': '\u23f8\ufe0f push-guard: unreviewed push paused \u2014 waiting for your choice (review / abandon). ' + reason,
     'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',

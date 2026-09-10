@@ -11,3 +11,4 @@
 - [2026-09-10：marketplace 版本号手工副本漂移](lessons/2026-09-10-marketplace-version-drift.md)
 - [2026-09-10：D7 跳过关键词表与 shell 语法冲突](lessons/2026-09-10-skip-scan-false-positive.md)
 - [2026-09-10：审计扫会话时的三个盲点](lessons/2026-09-10-transcript-audit-window.md)
+- [2026-09-10：非 UTF-8 环境把闸门变成放行](lessons/2026-09-10-non-utf8-environment.md)
