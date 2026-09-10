@@ -60,3 +60,25 @@ harness 成立（已核对：Bash/Agent 的 tool_result 均为块列表，同伴
 检查时，一个审查者按关键词读成 SKIPPED，另一个按维度含义读成 CLEAN（本次 D3 即如此）。
 两边定义一致只是把分歧收敛到可讨论，不能消除；分歧时把两种读法摆给对方重新判定，
 不要直接把自己的标签改成对方的。
+
+## 追加盲点（同日稍晚）：投递形态又换了一版
+
+同一条"读不到独立审查报告"的故障在收口 description 后再次出现，但记录形态不同：
+
+| 形态 | 记录位置 | 信封 |
+|---|---|---|
+| 旧（1.8.2 已接） | user 侧字符串 | `teammate-message` / `Another Claude session sent a message:`，`"from"` 为 JSON 字段 |
+| 后台任务完成 | `type:"attachment"`(`attachment.type:"queued_command"`) 与 `type:"queue-operation"` | `<task-notification>`，靠 `<tool-use-id>` 指回签名 spawn |
+| 具名子代理回信 | 同上 | `<agent-message from="NAME">`，NAME 即 spawn 时给的名字 |
+
+两点差异值得记牢：这些记录**不在** `message.content` 里（`type` 也不是 user），
+且信封用的是 `from="X"`（XML 属性）而不是 `"from": "X"`（JSON 字段），换行是**真换行**
+（旧的同伴消息是 JSON 信封里的字面 `\n`，要反转义）。锚点仍然是"带签名 spawn 过的
+agent"：`agent_ids` 认 `<tool-use-id>`，`agent_names` 认 `<agent-message from=…>`。
+
+**结论**：这条通道的形态由 harness 决定，会随版本变；每次 harness 升级后都该拿真实
+会话复验一次"大 diff 能否过闸"，否则故障表现是"审查白做、push 推不出去"。
+
+**自引自锁**：修 hook 本身也要过闸。本机跑的是插件缓存里的副本，仓库改动不会被闸门
+采用——需要先把修复版落到缓存里（本次是直接覆盖 `cache/<mp>/<plugin>/<ver>/hooks/`
+里那个与已发布版本逐字节一致的副本），才能推出修复本身。

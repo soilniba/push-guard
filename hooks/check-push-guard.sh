@@ -18,6 +18,10 @@
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
 #   5. SKIPPED is only allowed when conservative regex on diff finds no
 #      pattern matching that dimension
+#   6. The independent reviewer's report is read from whichever record the
+#      harness used to deliver it (tool_result, peer message, queue-operation,
+#      queued_command attachment), and every such record must trace back to a
+#      subagent spawned with the reviewer signature, never to model text
 #
 # The review is not started automatically: on an unreviewed push the hook denies
 # and instructs the model to let the user choose between running the review (and
@@ -495,6 +499,35 @@ SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
 CODEX_INDEPENDENT_TASK_RE = re.compile(r'^push_guard_independent(?:_[1-9][0-9]*)?$')
 # How the harness wraps a peer/subagent message delivered to this session.
 PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
+# Some harness builds deliver a subagent's report neither as a tool_result (the
+# Agent call returns spawn metadata only) nor as a user-side string, but as a
+# `queue-operation` entry or an `attachment` of type `queued_command`. Both are
+# harness-written records: the model cannot author them, so reading them opens
+# no self-attestation path. Both carry one of two envelopes:
+#   <agent-message from="NAME">report</agent-message>
+#       NAME must be an agent spawned with the reviewer signature.
+#   <task-notification>...<tool-use-id>ID</tool-use-id>...<result>report</result>
+#       ID must be an Agent call whose prompt carried the reviewer signature.
+# Unlike the JSON-enveloped peer delivery, these payloads hold real newlines.
+AGENT_MESSAGE_RE = re.compile(r'<agent-message from="([^"]+)">(.*?)</agent-message>', re.S)
+NOTIFICATION_ID_RE = re.compile(r'<tool-use-id>([^<]+)</tool-use-id>')
+NOTIFICATION_RESULT_RE = re.compile(r'<result>(.*?)</result>', re.S)
+
+
+def delivered_report(payload, agent_ids: set, agent_names: set) -> str:
+    """Report text carried by a harness delivery record, or '' when none."""
+    if not isinstance(payload, str):
+        return ''
+    m = AGENT_MESSAGE_RE.search(payload)
+    if m and m.group(1) in agent_names:
+        return m.group(2)
+    if '<task-notification>' in payload:
+        tid = NOTIFICATION_ID_RE.search(payload)
+        if tid and tid.group(1) in agent_ids:
+            res = NOTIFICATION_RESULT_RE.search(payload)
+            if res:
+                return res.group(1)
+    return ''
 main_texts = []
 sub_texts = []
 read_files = set()
@@ -652,6 +685,16 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                     for sub in content:
                         if isinstance(sub, dict) and sub.get('type') == 'text':
                             sub_texts.append(sub.get('text') or '')
+    elif etype in ('attachment', 'queue-operation'):
+        # Harness delivery record (see delivered_report above).
+        if etype == 'attachment':
+            att = e.get('attachment')
+            payload = att.get('prompt') if isinstance(att, dict) else None
+        else:
+            payload = e.get('content')
+        rep = delivered_report(payload, agent_ids, agent_names)
+        if rep:
+            sub_texts.append(rep)
     elif etype == 'response_item':
         p = codex_payload(e)
         ptype = p.get('type')

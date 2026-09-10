@@ -84,3 +84,19 @@ description 仍是 `Use before every git push or PR creation…`，模型每轮�
 1. description 只在闸门拦下、且用户选择"审查并推送"之后才指向本 skill，不再命令
    模型每次 push 前调用。
 2. 本次不引入新机制（不加"审计必须读到真实 AskUserQuestion 记录"的强制同意）。
+
+## 2026-09-10 审计要读得到本 harness 的子代理投递
+
+> 我在别的电脑装了这个插件，他怎么还是自动进行push审核了（…）   ← 收口 description 后，
+> 本机闸门又暴露出：大 diff 走完审查仍被拦，报告在会话里，审计读不到。
+
+定位：本 harness 把后台/具名子代理的报告记为 `queue-operation` 条目与
+`attachment`(type=`queued_command`) 条目，信封是 `<agent-message from="…">` /
+`<task-notification>…<tool-use-id>…<result>`；hook 只认 Agent 的 tool_result 与
+`teammate-message` / `Another Claude session sent a message:` 两种形态，两种都不是。
+
+目标：
+
+1. 报告无论以哪种 harness 记录形态送达都能被读到；每条记录都必须能追溯到"带审查
+   签名 spawn 过的子代理"，不得把模型可写的文本当成报告（自证通道不开）。
+2. 记录缺失时仍然拦住——读不到独立审查报告就不许推（决策 0003 的方向）。
