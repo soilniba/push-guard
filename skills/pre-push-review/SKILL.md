@@ -1,6 +1,6 @@
 ---
 name: pre-push-review
-description: Use before every git push or PR creation to run a systematic 7-dimension code safety scan on modified code
+description: Run only after the push-guard hook has blocked an unreviewed git push and the user has chosen to run the review — a systematic 7-dimension code safety scan on the diff being pushed. Never start this review on your own initiative and never before a push attempt.
 ---
 
 # Pre-Push Code Safety Review
