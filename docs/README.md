@@ -2,6 +2,7 @@
 
 - [需求原文](requirements.md)
 - [设计决策：使用远端跟踪分支作为审查基准](decisions/0001-remote-tracking-diff-base.md)
+- [设计决策：审查前由用户选择，放弃是允许的结局](decisions/0002-user-consent-before-review.md)
 
 ## 开发记录
 

@@ -18,6 +18,10 @@
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
 #   5. SKIPPED is only allowed when conservative regex on diff finds no
 #      pattern matching that dimension
+#
+# The review is not started automatically: on an unreviewed push the hook denies
+# and instructs the model to let the user choose between running the review (and
+# pushing) and abandoning the push.
 
 HOOK_INPUT=$(cat)
 
@@ -803,16 +807,29 @@ if [ "$AUDIT_VERDICT" = "PASS" ]; then
     exit 0
 fi
 
-# Deny with the audit's specific reason
+# Deny, but hand the decision to the user: running the review is no longer
+# automatic. The push stays blocked until the review passes, so declining the
+# review can only end in an abandon, never in an unreviewed push.
 REASON="$AUDIT_REASON" python3 -c "
 import json, os
 reason = os.environ.get('REASON', '')
+ask = (
+    'This push is unreviewed. The rule is: the user decides the next step. '
+    'Ask the user to choose between '
+    '(a) run the pre-push review and push, or (b) abandon this push. '
+    '(Claude Code: use AskUserQuestion. Codex: ask in your reply.) '
+    'On (a): run skill push-guard:pre-push-review, clear this audit, retry the push. '
+    'On (b): stop and leave the commits local. '
+    'If you already asked for this push and the user chose the review, do not ask '
+    'again: fix the audit detail below and retry. '
+    'Audit detail: '
+)
 print(json.dumps({
-    'systemMessage': '🚫 Push blocked by push-guard transcript audit. ' + reason,
+    'systemMessage': '⏸️ push-guard: unreviewed push paused — waiting for your choice (review / abandon). ' + reason,
     'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
-        'permissionDecisionReason': reason + ' Run skill push-guard:pre-push-review (or fix the cited issue) and retry.'
+        'permissionDecisionReason': ask + reason
     }
 }))
 "

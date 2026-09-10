@@ -9,7 +9,9 @@ description: Use before every git push or PR creation to run a systematic 7-dime
 
 ## When to Use
 
-**Mandatory** — before any `git push` or PR creation. The hook auto-blocks `git push` via Bash tool until this skill runs and emits a valid 7-dimension report with verifiable file:line citations.
+**The user decides first** — running this review is not automatic. On an unreviewed `git push` the hook blocks and hands the choice to the user: *run the review and push* or *abandon this push*. Ask the user and wait for the answer (Claude Code: `AskUserQuestion`; Codex: ask in your reply). Only the first choice leads here; on the second, stop and leave the commits local. Ask once per push: if the user already chose the review and the audit later fails for a technical reason, fix it and retry — do not ask again.
+
+**Mandatory once chosen** — for any `git push` or PR creation the user asked for, the hook blocks `git push` via Bash tool until this skill runs and emits a valid 7-dimension report with verifiable file:line citations. Declining the review can only end in an abandon, never in an unreviewed push.
 
 ## Anti-Bypass Notice
 

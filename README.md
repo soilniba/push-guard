@@ -2,7 +2,7 @@
 
 Pre-push code safety review plugin for Claude Code. Works with any language.
 
-Automatically blocks `git push` (executed via Claude's Bash tool) until a systematic 7-dimension code review is completed.
+Blocks `git push` (executed via Claude's Bash tool) until a systematic 7-dimension code review is completed. The hook does not start that review on its own: it asks you to choose between running the review (and pushing) and abandoning the push.
 
 ## 文档
 
@@ -25,7 +25,7 @@ Automatically blocks `git push` (executed via Claude's Bash tool) until a system
 1. `PreToolUse` hook intercepts every Bash tool call
 2. If the command contains `git push`, the hook resolves the target commit and the remote-tracking diff base
 3. The hook reads the session transcript and verifies the skill invocation, modified-file read, and 7-dimension report
-4. Missing or invalid evidence blocks the push
+4. Missing or invalid evidence blocks the push and asks you to choose: run the review, or abandon the push
 5. Every new target commit is checked against the remote-tracking base; if no base exists, the target is checked against the empty tree
 
 ### Why remote-tracking based?
