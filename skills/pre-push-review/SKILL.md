@@ -183,6 +183,9 @@ emit exactly seven lines in this format:
 
 Where N is 1..7, VERDICT is CLEAN | FIXED | SKIPPED, file:line is inside the
 diff hunks for CLEAN/FIXED (use file:0 for SKIPPED), reason is ≤80 chars.
+CLEAN = nothing in this diff needs changing for that dimension. FIXED = a change
+inside this diff repairs a defect in that dimension. Behaviour the diff leaves
+intact is CLEAN, not FIXED — when in doubt, CLEAN.
 
 The seven dimensions:
   D1 — External call exception safety & resource leaks
@@ -227,7 +230,7 @@ D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})
 
 Where:
 - `{N}` is `1` ... `7`
-- `{VERDICT}` is `CLEAN`, `FIXED`, or `SKIPPED`
+- `{VERDICT}` is `CLEAN`, `FIXED`, or `SKIPPED` — `CLEAN` when nothing in this diff needs changing for that dimension, `FIXED` only when a change *inside this diff* repairs a defect in it. Behaviour the diff leaves intact is `CLEAN`.
 - `{file}` is the path relative to repo root (must be in this push's diff for CLEAN/FIXED)
 - `{line}` is a real line number inside the diff hunks for CLEAN/FIXED; use `0` for SKIPPED
 - `{reason}` is a free-text justification (≤80 chars). For SKIPPED, the reason should briefly state why the dimension doesn't apply.

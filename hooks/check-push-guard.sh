@@ -408,6 +408,8 @@ def event_time(e: dict) -> int:
 # model-visible text, so support both transcript shapes.
 SKILL_NAME = 'push-guard:pre-push-review'
 skill_idx = None
+skill_tool_idx = None  # a real Skill tool call — the authoritative invocation
+skill_text_idx = None  # a prose mention — fallback only, see below
 
 def text_parts(content) -> list[str]:
     out = []
@@ -449,14 +451,20 @@ for i, e in enumerate(events):
             if c.get('type') == 'tool_use' and c.get('name') == 'Skill':
                 inp = c.get('input') or {}
                 if inp.get('skill') == SKILL_NAME:
-                    skill_idx = i
+                    skill_tool_idx = i
             elif c.get('type') == 'text' and SKILL_NAME in (c.get('text') or ''):
-                skill_idx = i
+                skill_text_idx = i
     elif e.get('type') == 'response_item':
         p = codex_payload(e)
         if p.get('type') == 'message' and p.get('role') == 'assistant':
             if any(SKILL_NAME in t for t in text_parts(p.get('content'))):
-                skill_idx = i
+                skill_text_idx = i
+
+# Prefer the real invocation. A mere mention of the skill name is not an
+# invocation: the announcement, a report or a summary naming the skill must not
+# move the window forward, or a Read (and the report) that came before the
+# mention fall outside it and a correct review gets rejected.
+skill_idx = skill_tool_idx if skill_tool_idx is not None else skill_text_idx
 
 if skill_idx is None:
     emit('FAIL',
@@ -474,10 +482,13 @@ SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
 # identity; an ACK for the same call must then establish the canonical agent
 # path before a report is accepted.
 CODEX_INDEPENDENT_TASK_RE = re.compile(r'^push_guard_independent(?:_[1-9][0-9]*)?$')
+# How the harness wraps a peer/subagent message delivered to this session.
+PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
 main_texts = []
 sub_texts = []
 read_files = set()
 agent_ids: set = set()
+agent_names: set = set()
 codex_pending_agents: dict = {}
 codex_independent_agents: dict = {}
 
@@ -566,7 +577,10 @@ def custom_tool_commands(payload: dict) -> list[str]:
             commands.append(command)
     return commands
 
-for i, e in enumerate(events[skill_idx + 1:], skill_idx + 1):
+# The window starts AT the invocation, inclusive: the assistant message that
+# carries the Skill call is the same message that often carries the report, and
+# an exclusive window would drop it as "missing cites".
+for i, e in enumerate(events[skill_idx:], skill_idx):
     etype = e.get('type')
     msg = e.get('message') or {}
     if etype == 'assistant':
@@ -593,10 +607,30 @@ for i, e in enumerate(events[skill_idx + 1:], skill_idx + 1):
                     # `tool_use_id` (also None) match and pollute sub_texts.
                     if aid:
                         agent_ids.add(aid)
+                    aname = (inp.get('name') or '').strip()
+                    if aname:
+                        agent_names.add(aname)
     elif etype == 'user':
+        raw = msg.get('content')
+        if isinstance(raw, str):
+            # A backgrounded subagent reports through a peer delivery — a
+            # user-side STRING message — while its Agent tool_result carries
+            # only spawn metadata (just "Spawned successfully..."). Without
+            # reading the delivery, a large diff can never satisfy the
+            # independent-reviewer gate. Accept a string only when it is
+            # wrapped as a harness peer delivery AND comes from an agent that
+            # was spawned with the reviewer signature: tool results are lists
+            # of tool_result blocks, so nothing the model can echo qualifies.
+            # `\n` is unescaped because the report travels inside a JSON envelope.
+            if PEER_DELIVERY_RE.search(raw) and any(
+                re.search(r'"from"\s*:\s*"%s"' % re.escape(n), raw)
+                for n in agent_names
+            ):
+                sub_texts.append(raw.replace('\\n', '\n'))
+            continue
         # Agent tool_result events live on the user side. Pair with
         # tool_use_id collected above.
-        for c in (msg.get('content') or []):
+        for c in (raw or []):
             if not isinstance(c, dict):
                 continue
             if c.get('type') == 'tool_result' and c.get('tool_use_id') in agent_ids:
