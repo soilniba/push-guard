@@ -514,12 +514,23 @@ NOTIFICATION_ID_RE = re.compile(r'<tool-use-id>([^<]+)</tool-use-id>')
 NOTIFICATION_RESULT_RE = re.compile(r'<result>(.*?)</result>', re.S)
 
 
+def same_agent(name: str, spawn_names: set) -> bool:
+    """True when `name` names a spawn, allowing the harness's -N dedup suffix.
+
+    A spawn record holds the name that was requested; the delivery envelope
+    carries the name the harness resolved it to, which is `<name>-<n>` once
+    that name is already taken in the session. Anchoring on the requested name
+    alone drops the report of every reviewer spawned after the first one.
+    """
+    return any(name == n or name.startswith(n + '-') for n in spawn_names)
+
+
 def delivered_report(payload, agent_ids: set, agent_names: set) -> str:
     """Report text carried by a harness delivery record, or '' when none."""
     if not isinstance(payload, str):
         return ''
     m = AGENT_MESSAGE_RE.search(payload)
-    if m and m.group(1) in agent_names:
+    if m and same_agent(m.group(1), agent_names):
         return m.group(2)
     if '<task-notification>' in payload:
         tid = NOTIFICATION_ID_RE.search(payload)
@@ -666,11 +677,10 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             # was spawned with the reviewer signature: tool results are lists
             # of tool_result blocks, so nothing the model can echo qualifies.
             # `\n` is unescaped because the report travels inside a JSON envelope.
-            if PEER_DELIVERY_RE.search(raw) and any(
-                re.search(r'"from"\s*:\s*"%s"' % re.escape(n), raw)
-                for n in agent_names
-            ):
-                sub_texts.append(raw.replace('\\n', '\n'))
+            if PEER_DELIVERY_RE.search(raw):
+                fm = re.search(r'"from"\s*:\s*"([^"]+)"', raw)
+                if fm and same_agent(fm.group(1), agent_names):
+                    sub_texts.append(raw.replace('\\n', '\n'))
             continue
         # Agent tool_result events live on the user side. Pair with
         # tool_use_id collected above.
