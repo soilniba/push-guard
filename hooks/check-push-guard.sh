@@ -4,6 +4,7 @@
 #
 # Hook input arrives via stdin as JSON:
 #   {"tool_name":"Bash","tool_input":{"command":"..."},"transcript_path":"...",...}
+#   {"tool_name":"functions.exec_command","tool_input":{"cmd":"..."},"transcript_path":"...",...}
 #
 # Detection is shlex-token based: only commands where shlex tokenizes `git`
 # adjacent to `push` are gated. False positives on quoted strings / heredocs
@@ -40,9 +41,10 @@ import os, json, shlex
 
 try:
     d = json.loads(os.environ.get('HOOK_INPUT', ''))
-    cmd = d['tool_input']['command']
+    tool_input = d.get('tool_input') or {}
+    cmd = tool_input.get('command') or tool_input.get('cmd')
     if not isinstance(cmd, str):
-        raise TypeError('command is not a string')
+        raise TypeError('command/cmd is not a string')
 except Exception:
     # Could not read the command at all — bad JSON, or an input shape this hook
     # does not understand. That is NOT the same as "not a push", so it must not
@@ -67,12 +69,22 @@ def _is_shell_boundary(t: str) -> bool:
         k += 1
     return k > 0 and k < len(t) and t[k] in '><'
 
+def _is_command_position(index: int) -> bool:
+    if index == 0:
+        return True
+    previous = toks[index - 1]
+    if _is_shell_boundary(previous):
+        return True
+    # Common command wrappers still leave git as the wrapped command, while
+    # ordinary prose such as `echo git push` must not be treated as a push.
+    return previous in {'command', 'env', 'nice', 'nohup', 'sudo', 'time'}
+
 push_args = None
 git_C_path = ''
 i = 0
 while i < len(toks):
     base = toks[i].rsplit('/', 1)[-1]
-    if base == 'git':
+    if base in {'git', 'git.exe'} and _is_command_position(i):
         j = i + 1
         local_C = ''
         while j < len(toks):
@@ -178,6 +190,7 @@ if [ -z "$LOCAL_REF" ] || [ "$LOCAL_REF" = "__UNPARSED__" ]; then
     if [[ "$HOOK_INPUT" =~ $PUSH_RE ]]; then
         printf '%s' '{
   "systemMessage": "⛔ push-guard: command could not be parsed (no python3/python on PATH, or unreadable hook input) — push blocked instead of allowed unreviewed.",
+  "decision": "block",
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
@@ -972,6 +985,7 @@ ask = (
 )
 print(json.dumps({
     'systemMessage': '\u23f8\ufe0f push-guard: unreviewed push paused \u2014 waiting for your choice (review / abandon). ' + reason,
+    'decision': 'block',
     'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
