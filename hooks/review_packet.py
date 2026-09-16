@@ -13,6 +13,31 @@ from typing import Any, Mapping
 from .review_policy import ReviewDecision, ReviewProfile, ReviewTier
 
 
+@dataclass
+class ReviewState:
+    """Bounded per-target state for semantic and protocol work."""
+
+    target_sha: str
+    semantic_review_done: bool
+    protocol_repairs: int = 0
+    independent_reviews: int = 0
+
+    def can_retry_protocol(self) -> bool:
+        return self.semantic_review_done and self.protocol_repairs < 1
+
+    def can_start_independent(self) -> bool:
+        return self.semantic_review_done and self.independent_reviews < 1
+
+    def protocol_failure_message(self) -> str:
+        status = "已完成" if self.semantic_review_done else "未完成"
+        remaining = "允许一次协议修复" if self.can_retry_protocol() else "协议修复次数已用尽"
+        return (
+            f"代码审查状态：{status}；目标：{self.target_sha}\n"
+            "当前失败类型：插件协议问题，不是代码问题\n"
+            f"剩余动作：{remaining}；超过后交给用户判断"
+        )
+
+
 _READ_COMMAND_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?:"
     r"Read"
