@@ -1,30 +1,137 @@
 ---
 name: pre-push-review
-description: Run only after the push-guard hook has blocked an unreviewed git push and the user has chosen to run the review — a systematic 7-dimension code safety scan on the diff being pushed. Never start this review on your own initiative and never before a push attempt.
+description: Run only after the push-guard hook has blocked an unreviewed git push and the user has chosen to run the review. Use the manually selected profile and inspect only the target diff. Never start this review on your own initiative and never before a push attempt.
 ---
 
 # Pre-Push Code Safety Review
 
 **Announce at start:** "I'm using push-guard:pre-push-review to scan modified code before pushing."
 
+## Important: choose the protocol before reading the legacy checklist
+
+`PUSH_GUARD_PROFILE` is selected manually by the user or deployment
+configuration. The plugin never reads, guesses, or scores model capability.
+If it is not set, use `balanced`.
+
+- `fast` and `balanced` use the bounded `PASS/BLOCK/NOTE` protocol below.
+- `strict` uses the legacy seven-dimension protocol in the final section.
+- L0/L1/L2 describe only the risk of the current diff; they do not describe
+  model quality.
+- Unless the profile is `strict`, ignore every section explicitly marked
+  **strict-mode legacy**. Do not emit seven dimension lines in the default
+  protocol.
+
 ## When to Use
 
 **The user decides first** — running this review is not automatic. On an unreviewed `git push` the hook blocks and hands the choice to the user: *run the review and push* or *abandon this push*. Ask the user and wait for the answer (Claude Code: `AskUserQuestion`; Codex: ask in your reply). Only the first choice leads here; on the second, stop and leave the commits local. Ask once per push: if the user already chose the review and the audit later fails for a technical reason, fix it and retry — do not ask again.
 
-**Mandatory once chosen** — for any `git push` or PR creation the user asked for, the hook blocks `git push` via Bash tool until this skill runs and emits a valid 7-dimension report with verifiable file:line citations. Declining the review can only end in an abandon, never in an unreviewed push.
+**Mandatory once chosen** — for any `git push` the hook blocks the push until
+this skill runs and emits a valid result for the selected profile. Declining
+the review can only end in an abandon, never in an unreviewed push.
 
 ## Anti-Bypass Notice
 
 The hook does **not** trust a marker file or self-attestation. It reads the Claude Code session transcript and verifies:
 
 1. This skill was actually invoked since the HEAD commit
-2. The 7-dimension report was emitted in the required format (below)
-3. Every CLEAN/FIXED cite points to a `file:line` that is **inside this push's diff**
-4. SKIPPED dimensions are only allowed when the diff genuinely contains no patterns matching that dimension
+2. A valid result for the selected profile was emitted in the required format
+3. In `fast`/`balanced`, every `BLOCK` finding points to a changed file and
+   positive line inside the push's diff
+4. In `strict`, the legacy citation and SKIPPED checks still apply
 
 You cannot pass by writing a marker, by reciting verdicts without cites, or by citing arbitrary lines outside the diff. Faking a passable report requires actually reading the diff and finding real lines — at which point you've done the review.
 
 ---
+
+## Default fast/balanced process
+
+The goal is to find clear, severe, reproducible blocking bugs quickly. It is
+not to eliminate every theoretical edge case. Do not block for unknown,
+extreme-environment, style, architecture-preference, or diff-unverifiable
+concerns. Put those in `NOTE`.
+
+### Step 1: Use the fixed review packet
+
+Use the packet information shown by the plugin or generate the equivalent
+target-scoped packet:
+
+```text
+target_sha=<exact push target>
+base_ref=<remote-tracking diff base>
+review_profile=<fast|balanced>
+tier=<L0|L1|L2>
+```
+
+Read only the listed high-priority files and changed sections. `Read`,
+`functions.exec_command`, `custom_tool_call`, `cat`, `sed`, `nl`, `head`,
+`tail`, PowerShell `Get-Content`, `git diff`, and `git show` are equivalent
+ways to read evidence. Do not reread the whole repository or unrelated history.
+
+L0 documentation-only changes are handled mechanically and do not invoke this
+skill. L1 receives one bounded review. L2 is reserved for hooks, permissions,
+authentication, command execution, migrations, locks, retries, task recovery,
+target selection, routing, and other directly evidenced high-risk changes.
+
+### Step 2: Perform one focused semantic scan
+
+Check only for a clear blocking defect in the changed code:
+
+- wrong target, scope expansion, duplicate execution, or data loss;
+- permission/authentication bypass or committed credential;
+- normal-path uncaught exception or resource leak;
+- broken hook, deployment, migration, or command boundary;
+- a regression directly demonstrated by the diff.
+
+Do not repair code, run tests, or expand into unrelated files during this scan.
+The main reviewer runs at most once for this target commit.
+
+### Step 3: Emit the normalized result
+
+For a clean review:
+
+```text
+RESULT PASS
+SEVERITY none
+SUMMARY 未发现明确的阻断级问题
+```
+
+For a clear, diff-verifiable blocking defect:
+
+```text
+RESULT BLOCK
+SEVERITY high
+FINDING app/router.py:813
+REASON 缺少目标时会扩大执行范围
+```
+
+Ordinary concerns are non-blocking:
+
+```text
+RESULT PASS
+SEVERITY note
+NOTE 某极端环境未在当前 diff 中验证，但没有发现正常路径故障
+```
+
+`PASS` does not require seven citations. `BLOCK` requires a changed-file
+`file:line` finding. Emit no more than three findings. Do not output a second
+semantic review for the same target commit.
+
+### Step 4: Bounded L2 independent check
+
+For `fast`/`balanced`, do not start an independent reviewer for L0 or L1, and
+do not start one merely because the diff is large. For L2, start at most one
+independent reviewer only after the main result is `BLOCK`. Compare only
+`BLOCK` versus non-`BLOCK`; differences in wording or legacy labels are not
+blocking. If the independent result cannot be delivered or parsed, report a
+plugin protocol problem and stop after one format repair.
+
+---
+
+## Strict-mode legacy process
+
+The following sections are retained only for `PUSH_GUARD_PROFILE=strict`.
+Strict mode preserves the previous seven-dimension checklist and independent
+review behavior for compatibility with older projects and release audits.
 
 ## Prerequisite: Clean Working Tree
 

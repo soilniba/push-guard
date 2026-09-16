@@ -1,6 +1,6 @@
 #!/bin/bash
-# Push Guard: block git push via Claude/Codex Bash tool until pre-push-review skill
-# emits a verifiable 7-dimension report with file:line citations inside the diff.
+# Push Guard: block git push via Claude/Codex Bash tool until the selected
+# pre-push-review protocol emits a verifiable result for the target diff.
 #
 # Hook input arrives via stdin as JSON:
 #   {"tool_name":"Bash","tool_input":{"command":"..."},"transcript_path":"...",...}
@@ -14,11 +14,11 @@
 # A bare token write cannot bypass; the hook validates that:
 #   1. push-guard:pre-push-review Skill was invoked since HEAD's commit time
 #   2. The Read tool was used on a file in this push's diff
-#   3. Seven dimension cites D1..D7 appear in the assistant text after the
-#      Skill invocation, in the format `D{N} {VERDICT} — {file}:{line} (reason)`
+#   3. The selected profile's normalized PASS/BLOCK result appears after the
+#      Skill invocation. Strict mode retains the legacy seven-dimension format.
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
-#   5. SKIPPED is only allowed when conservative regex on diff finds no
-#      pattern matching that dimension
+#   5. BLOCK findings point into the pushed diff. PASS does not need citations
+#      in fast/balanced modes.
 #   6. The independent reviewer's report is read from whichever record the
 #      harness used to deliver it (tool_result, peer message, queue-operation,
 #      queued_command attachment), and every such record must trace back to a
@@ -29,6 +29,9 @@
 # pushing) and abandoning the push.
 
 HOOK_INPUT=$(cat)
+HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PUSH_GUARD_ROOT=$(cd "$HOOK_DIR/.." && pwd)
+export PUSH_GUARD_ROOT
 
 # Interpreter for stages 1 and 3. Windows ships `python`, not `python3`, so
 # accept either; if neither exists PYTHON_BIN stays empty and the stages fail
@@ -232,11 +235,23 @@ AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GI
     PYTHONIOENCODING=utf-8 "$PYTHON_BIN" <<'PYEOF'
 import os, json, re, glob, subprocess, sys
 from datetime import datetime
+from pathlib import Path
 
 def emit(verdict: str, reason: str = '') -> None:
     print(verdict)
     print(reason)
     raise SystemExit(0)
+
+push_guard_root = os.environ.get('PUSH_GUARD_ROOT', '')
+if push_guard_root:
+    sys.path.insert(0, push_guard_root)
+
+try:
+    from hooks.review_packet import ReviewPacket, ReviewState
+    from hooks.review_policy import ReviewPolicy
+    from hooks.review_report import parse_review_result, validate_review_result
+except Exception as exc:
+    emit('FAIL', f'push-guard protocol modules unavailable: {exc}')
 
 try:
     hook_input = json.loads(os.environ.get('HOOK_INPUT', ''))
@@ -397,6 +412,62 @@ added_lines = '\n'.join(
     line[1:] for line in diff_full.split('\n')
     if line.startswith('+') and not line.startswith('+++')
 )
+deleted_lines = '\n'.join(
+    line[1:] for line in diff_full.split('\n')
+    if line.startswith('-') and not line.startswith('---')
+)
+
+try:
+    review_policy = ReviewPolicy.from_environment(os.environ)
+    review_decision = review_policy.classify(
+        sorted(diff_files),
+        added_lines,
+        deleted_lines,
+    )
+except Exception as exc:
+    emit('FAIL', f'push-guard protocol/configuration problem: {exc}')
+
+if review_decision.tier == 'L0':
+    emit('PASS', 'L0 documentation-only diff; no model review required')
+
+def select_packet_diff(source: str, selected_files: tuple[str, ...]) -> str:
+    selected = set(selected_files)
+    blocks = []
+    current = []
+    current_file = None
+
+    def flush() -> None:
+        if current and current_file in selected:
+            blocks.extend(current)
+
+    for line in source.splitlines():
+        if line.startswith('diff --git '):
+            flush()
+            current = [line]
+            current_file = None
+            continue
+        if not current:
+            continue
+        current.append(line)
+        if line.startswith('+++ b/'):
+            current_file = line[6:].rstrip('\t').replace('\\', '/')
+    flush()
+    return '\n'.join(blocks) + ('\n' if blocks else '')
+
+repo_path = Path(git_c_path or os.getcwd()).resolve()
+review_packet = ReviewPacket(
+    target_sha=target_sha,
+    base_ref=base,
+    tier=review_decision.tier,
+    profile=review_decision.profile,
+    high_priority_files=review_decision.high_priority_files,
+    changed_files=tuple(sorted(diff_files)),
+    diff=select_packet_diff(
+        diff_full,
+        review_decision.high_priority_files,
+    ),
+    repo=repo_path,
+)
 
 # Read transcript JSONL
 events = []
@@ -438,6 +509,8 @@ SKILL_NAME = 'push-guard:pre-push-review'
 skill_idx = None
 skill_tool_idx = None  # a real Skill tool call — the authoritative invocation
 skill_text_idx = None  # a prose mention — fallback only, see below
+skill_tool_count = 0
+skill_text_count = 0
 
 def text_parts(content) -> list[str]:
     out = []
@@ -480,13 +553,16 @@ for i, e in enumerate(events):
                 inp = c.get('input') or {}
                 if inp.get('skill') == SKILL_NAME:
                     skill_tool_idx = i
+                    skill_tool_count += 1
             elif c.get('type') == 'text' and SKILL_NAME in (c.get('text') or ''):
                 skill_text_idx = i
+                skill_text_count += 1
     elif e.get('type') == 'response_item':
         p = codex_payload(e)
         if p.get('type') == 'message' and p.get('role') == 'assistant':
             if any(SKILL_NAME in t for t in text_parts(p.get('content'))):
                 skill_text_idx = i
+                skill_text_count += 1
 
 # Prefer the real invocation. A mere mention of the skill name is not an
 # invocation: the announcement, a report or a summary naming the skill must not
@@ -564,10 +640,21 @@ codex_independent_agents: dict = {}
 def command_mentions_diff_read(cmd: str) -> set[str]:
     if not cmd:
         return set()
-    if not re.search(r'\b(cat|sed|nl|less|head|tail|rg|grep|git\s+show)\b', cmd):
-        return set()
     found = set()
     norm_cmd = cmd.replace('\\', '/')
+    if review_packet.accepts_read_evidence(cmd):
+        for df in review_packet.files_to_read():
+            if df in norm_cmd:
+                found.add(df)
+        if found:
+            return found
+    if not re.search(
+        r'\b(cat|sed|nl|less|head|tail|rg|grep|Get-Content|'
+        r'git\s+(?:diff|show))\b',
+        cmd,
+        re.IGNORECASE,
+    ):
+        return set()
     for df in diff_files:
         if df in norm_cmd:
             found.add(df)
@@ -702,26 +789,40 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             ctype = c.get('type')
             if ctype == 'text':
                 main_texts.append(c.get('text') or '')
-            elif ctype == 'tool_use' and c.get('name') == 'Read':
-                fp = (c.get('input') or {}).get('file_path') or ''
-                if fp:
-                    # Normalize: diff paths use `/`; on Windows, Read passes
-                    # backslash absolute paths, so normalize to `/` for suffix match.
-                    read_files.add(fp.replace('\\', '/'))
-            elif ctype == 'tool_use' and c.get('name') == 'Agent':
-                # Only count Agent calls that carry our independent-reviewer
-                # signature in the prompt. Other agent spawns are unrelated.
-                inp = c.get('input') or {}
-                if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
-                    aid = c.get('id')
-                    # Reject id=None: a malformed tool_use without an id
-                    # would otherwise let any tool_result lacking
-                    # `tool_use_id` (also None) match and pollute sub_texts.
-                    if aid:
-                        agent_ids.add(aid)
-                    aname = (inp.get('name') or '').strip()
-                    if aname:
-                        agent_names.add(aname)
+            elif ctype == 'tool_use':
+                tool_name = c.get('name') or ''
+                tool_input = c.get('input') or {}
+                if tool_name == 'Agent':
+                    # Only count Agent calls that carry our independent-reviewer
+                    # signature in the prompt. Other agent spawns are unrelated.
+                    inp = tool_input
+                    if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
+                        aid = c.get('id')
+                        # Reject id=None: a malformed tool_use without an id
+                        # would otherwise let any tool_result lacking
+                        # `tool_use_id` (also None) match and pollute sub_texts.
+                        if aid:
+                            agent_ids.add(aid)
+                        aname = (inp.get('name') or '').strip()
+                        if aname:
+                            agent_names.add(aname)
+                elif tool_name == 'Read':
+                    fp = tool_input.get('file_path') or ''
+                    if fp:
+                        # Normalize: diff paths use `/`; on Windows, Read passes
+                        # backslash absolute paths, so normalize to `/` for suffix match.
+                        read_files.add(fp.replace('\\', '/'))
+                elif review_packet.accepts_read_evidence(
+                    {'name': tool_name, 'input': tool_input}
+                ):
+                    rendered = json.dumps(
+                        {'name': tool_name, 'input': tool_input},
+                        ensure_ascii=False,
+                    ).replace('\\', '/')
+                    read_files.update(
+                        df for df in review_packet.files_to_read()
+                        if df in rendered
+                    )
     elif etype == 'user':
         raw = msg.get('content')
         if isinstance(raw, str):
@@ -847,6 +948,147 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
 
 joined_text = '\n'.join(main_texts)
 sub_joined_text = '\n'.join(sub_texts)
+
+if review_decision.profile != 'strict':
+    skill_invocations = (
+        skill_tool_count
+        if skill_tool_count
+        else skill_text_count
+    )
+    if skill_invocations > 1:
+        review_state = ReviewState(
+            target_sha,
+            semantic_review_done=True,
+            protocol_repairs=1,
+            independent_reviews=0,
+        )
+        emit(
+            'FAIL',
+            review_state.protocol_failure_message()
+            + '\n禁止对同一目标 commit 重跑完整语义审查',
+        )
+
+    try:
+        normalized_result = parse_review_result(
+            joined_text,
+            profile=review_decision.profile,
+        )
+    except Exception as exc:
+        emit(
+            'FAIL',
+            'code review status: incomplete\n'
+            'blocking issue: unknown\n'
+            'failure type: push-guard protocol problem\n'
+            'remaining action: repair the result format once; then stop\n'
+            f'detail: {exc}',
+        )
+
+    normalized_validation = validate_review_result(
+        normalized_result,
+        review_packet,
+    )
+    if not normalized_validation.valid:
+        emit(
+            'FAIL',
+            'code review status: complete\n'
+            f'blocking issue: {normalized_result.status == "BLOCK"}\n'
+            'failure type: push-guard protocol problem\n'
+            'remaining action: repair the finding format once; then stop\n'
+            f'detail: {normalized_validation.reason}',
+        )
+
+    packet_files = review_packet.files_to_read()
+    read_ok = any(
+        any(
+            read_file == packet_file
+            or read_file.endswith('/' + packet_file)
+            for packet_file in packet_files
+        )
+        for read_file in read_files
+    )
+    if not read_ok:
+        emit(
+            'FAIL',
+            'code review status: complete\n'
+            f'blocking issue: {normalized_result.status == "BLOCK"}\n'
+            'failure type: push-guard protocol problem\n'
+            'remaining action: read one high-priority packet file once; then stop\n'
+            f'detail: no equivalent read evidence for {list(packet_files)}',
+        )
+
+    if (
+        review_decision.tier == 'L2'
+        and normalized_result.status == 'BLOCK'
+    ):
+        independent_count = max(
+            len(agent_names),
+            len(codex_pending_agents),
+        )
+        if independent_count > 1:
+            review_state = ReviewState(
+                target_sha,
+                semantic_review_done=True,
+                protocol_repairs=0,
+                independent_reviews=1,
+            )
+            emit(
+                'FAIL',
+                review_state.protocol_failure_message()
+                + '\n独立 reviewer 最多允许一次',
+            )
+        if not sub_joined_text.strip():
+            emit(
+                'FAIL',
+                'code review status: complete\n'
+                'blocking issue: yes\n'
+                'failure type: push-guard protocol problem\n'
+                'remaining action: run one registered independent reviewer; then stop\n'
+                'detail: L2 BLOCK requires one independent BLOCK/PASS check',
+            )
+        try:
+            independent_result = parse_review_result(
+                sub_joined_text,
+                profile=review_decision.profile,
+            )
+        except Exception as exc:
+            emit(
+                'FAIL',
+                'code review status: complete\n'
+                'blocking issue: yes\n'
+                'failure type: push-guard protocol problem\n'
+                'remaining action: repair the independent result once; then stop\n'
+                f'detail: {exc}',
+            )
+        independent_validation = validate_review_result(
+            independent_result,
+            review_packet,
+        )
+        if not independent_validation.valid:
+            emit(
+                'FAIL',
+                'code review status: complete\n'
+                'blocking issue: yes\n'
+                'failure type: push-guard protocol problem\n'
+                'remaining action: repair the independent finding once; then stop\n'
+                f'detail: {independent_validation.reason}',
+            )
+        if independent_result.status != normalized_result.status:
+            emit(
+                'FAIL',
+                'code review status: complete\n'
+                'blocking issue: unknown\n'
+                'failure type: code risk disagreement\n'
+                'remaining action: user decides whether to fix or re-examine once\n'
+                f'detail: main={normalized_result.status}, '
+                f'independent={independent_result.status}',
+            )
+
+    emit(
+        'PASS',
+        f'normalized review passed: {normalized_result.status}; '
+        f'tier={review_decision.tier}; '
+        f'independent={review_decision.tier == "L2" and normalized_result.status == "BLOCK"}',
+    )
 
 # Verify Read tool was used on at least one diff file
 def matches_diff_file(read_fp: str) -> bool:
