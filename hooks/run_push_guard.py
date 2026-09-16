@@ -13,12 +13,104 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import shlex
 import subprocess
 import sys
 
 
 HOOK_SCRIPT = Path(__file__).with_name("check-push-guard.sh")
+GIT_OPTS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--list-cmds",
+}
+
+
+def _is_shell_boundary(token: str) -> bool:
+    if not token:
+        return False
+    if token[0] in "|;&><":
+        return True
+    index = 0
+    while index < len(token) and token[index].isdigit():
+        index += 1
+    return index > 0 and index < len(token) and token[index] in "><"
+
+
+def _is_env_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", token))
+
+
+def _is_command_position(tokens: list[str], index: int) -> bool:
+    if index == 0:
+        return True
+    previous_index = index - 1
+    while previous_index >= 0 and _is_env_assignment(tokens[previous_index]):
+        previous_index -= 1
+    if previous_index < 0:
+        return True
+    previous = tokens[previous_index]
+    if _is_shell_boundary(previous):
+        return True
+    return previous in {"command", "env", "nice", "nohup", "sudo", "time"}
+
+
+def _git_subcommand_is_push(tokens: list[str], git_index: int) -> bool | None:
+    index = git_index + 1
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_boundary(token):
+            return False
+        if token == "push":
+            return True
+        if token in GIT_OPTS_WITH_VALUE:
+            if index + 1 >= len(tokens):
+                return None
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return False
+    return False
+
+
+def _is_push_candidate(payload: bytes) -> bool:
+    """Return whether the full shell hook should inspect this payload.
+
+    A false result is only returned when the command can be confidently
+    classified as not containing an executable ``git push``. Any malformed
+    or ambiguous input is forwarded to the shell hook, which fails closed.
+    """
+
+    try:
+        data = json.loads(payload.decode("utf-8"))
+        tool_input = data.get("tool_input") or {}
+        command = tool_input.get("command") or tool_input.get("cmd")
+        if not isinstance(command, str):
+            return True
+        tokens = shlex.split(command)
+    except Exception:
+        return True
+
+    for index, token in enumerate(tokens):
+        base = token.rsplit("/", 1)[-1].lower()
+        if base not in {"git", "git.exe"}:
+            continue
+        if not _is_command_position(tokens, index):
+            continue
+        result = _git_subcommand_is_push(tokens, index)
+        if result is None:
+            return True
+        if result:
+            return True
+    return False
 
 
 def _deny(reason: str) -> int:
@@ -95,6 +187,10 @@ def _find_bash() -> Path | None:
 
 
 def main() -> int:
+    payload = sys.stdin.buffer.read()
+    if not _is_push_candidate(payload):
+        return 0
+
     if not HOOK_SCRIPT.is_file():
         return _deny(f"Push Guard hook script not found: {HOOK_SCRIPT}")
 
@@ -105,7 +201,6 @@ def main() -> int:
             "PUSH_GUARD_BASH to the path of bash.exe, then retry."
         )
 
-    payload = sys.stdin.buffer.read()
     try:
         completed = subprocess.run(
             [os.fspath(bash), os.fspath(HOOK_SCRIPT)],

@@ -6,9 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/run_push_guard.py",
-            "commandWindows": "python ${PLUGIN_ROOT}/hooks/run_push_guard.py",
-            "statusMessage": "Checking push-guard review",
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-.}}/hooks/run_push_guard.cmd\"",
+            "commandWindows": "\"${PLUGIN_ROOT}/hooks/run_push_guard.cmd\"",
             "async": false
           }
         ]

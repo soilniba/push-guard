@@ -40,7 +40,7 @@ PYTHON_BIN=$(command -v python3 || command -v python)
 
 # ===== Stage 1: detect git push =====
 RESULT=$(HOOK_INPUT="$HOOK_INPUT" PYTHONIOENCODING=utf-8 "$PYTHON_BIN" <<'PYEOF'
-import os, json, shlex
+import os, json, re, shlex
 
 try:
     d = json.loads(os.environ.get('HOOK_INPUT', ''))
@@ -72,10 +72,18 @@ def _is_shell_boundary(t: str) -> bool:
         k += 1
     return k > 0 and k < len(t) and t[k] in '><'
 
+def _is_env_assignment(t: str) -> bool:
+    return bool(re.match(r'^[A-Za-z_][A-Za-z0-9_]*\+?=', t))
+
 def _is_command_position(index: int) -> bool:
     if index == 0:
         return True
-    previous = toks[index - 1]
+    previous_index = index - 1
+    while previous_index >= 0 and _is_env_assignment(toks[previous_index]):
+        previous_index -= 1
+    if previous_index < 0:
+        return True
+    previous = toks[previous_index]
     if _is_shell_boundary(previous):
         return True
     # Common command wrappers still leave git as the wrapped command, while

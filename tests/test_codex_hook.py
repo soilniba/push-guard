@@ -1,8 +1,10 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+from hooks import run_push_guard
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOOK_CONFIG = ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = ROOT / "hooks" / "check-push-guard.sh"
+HOOK_LAUNCHER = ROOT / "hooks" / "run_push_guard.cmd"
 FIXTURE_DIR = ROOT / "tests" / "fixtures"
 
 
@@ -29,11 +32,40 @@ def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
         cwd=ROOT,
         input=json.dumps(payload),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
         timeout=30,
         env=env,
     )
+
+
+def _make_unpushed_repo(tmp_path: Path) -> Path:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Push Guard Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    (repo / "app.py").write_text("print('test')\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "app.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "基线"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", str(remote)],
+        check=True,
+    )
+    return repo
 
 
 def _run_fixture(name: str, tmp_path: Path, read_file: str | None = None):
@@ -80,9 +112,64 @@ def test_hook_uses_cross_platform_python_launcher():
     ]
 
     assert any(
-        hook.get("command") == "python3 ${PLUGIN_ROOT}/hooks/run_push_guard.py"
-        and hook.get("commandWindows") == "python ${PLUGIN_ROOT}/hooks/run_push_guard.py"
+        hook.get("command", "").startswith('"')
+        and "${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-.}}" in hook.get(
+            "command", ""
+        )
+        and "${PLUGIN_ROOT}" in hook.get("commandWindows", "")
+        and hook.get("command", "").endswith("/hooks/run_push_guard.cmd\"")
+        and hook.get("commandWindows", "").endswith(
+            "/hooks/run_push_guard.cmd\""
+        )
         for hook in hooks
+    )
+
+
+def test_hook_launcher_is_a_claude_compatible_polyglot_wrapper():
+    script = HOOK_LAUNCHER.read_text(encoding="utf-8")
+
+    assert "@echo off" in script
+    assert "PUSH_GUARD_CMD" in script
+    assert "run_push_guard.py" in script
+
+
+def test_hook_does_not_show_a_status_message_for_every_shell_command():
+    config = json.loads(HOOK_CONFIG.read_text(encoding="utf-8"))
+    hooks = [
+        hook
+        for entry in config["hooks"]["PreToolUse"]
+        for hook in entry.get("hooks", [])
+        if hook.get("type") == "command"
+    ]
+
+    assert all("statusMessage" not in hook for hook in hooks)
+
+
+def test_launcher_skips_git_commit_even_when_commit_message_mentions_push():
+    commit_payload = {
+        "tool_name": "functions.exec_command",
+        "tool_input": {
+            "cmd": 'git commit -m "push-guard launcher update"',
+        },
+        "transcript_path": "",
+    }
+
+    assert not run_push_guard._is_push_candidate(
+        json.dumps(commit_payload).encode("utf-8")
+    )
+
+
+def test_launcher_keeps_environment_assignment_git_push_on_the_review_path():
+    push_payload = {
+        "tool_name": "functions.exec_command",
+        "tool_input": {
+            "cmd": "FOO=1 git push origin main",
+        },
+        "transcript_path": "",
+    }
+
+    assert run_push_guard._is_push_candidate(
+        json.dumps(push_payload).encode("utf-8")
     )
 
 
@@ -127,6 +214,21 @@ def test_codex_cmd_field_still_blocks_an_actual_push():
         {
             "tool_name": "functions.exec_command",
             "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": "",
+        }
+    )
+
+    assert result.returncode == 0
+    assert '"permissionDecision": "deny"' in result.stdout
+
+
+def test_environment_assignment_before_git_push_is_blocked(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    command = f"FOO=1 git -C {shlex.quote(str(repo))} push origin main"
+    result = _run_hook(
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": command},
             "transcript_path": "",
         }
     )
