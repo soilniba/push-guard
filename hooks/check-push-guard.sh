@@ -265,30 +265,6 @@ push_remote = os.environ.get('PUSH_REMOTE', '')
 push_dest = os.environ.get('PUSH_DEST', '')
 transcript_path = hook_input.get('transcript_path', '')
 
-if not transcript_path:
-    emit('FAIL', 'hook input has no transcript_path')
-
-# Worktree fallback: in some setups (e.g. Claude session started in a parent
-# repo, then cwd switched into a worktree under .claude/worktrees/), Claude
-# Code encodes transcript_path against cwd but writes the jsonl under the
-# parent repo's project dir. The literal path then doesn't exist. Fall back
-# to a basename search under ~/.claude/projects/*/.
-#
-# Strict UUID regex on the basename: rejects non-UUID names so an attacker (or
-# a buggy wrapper) can't make the hook resolve `transcript_path = passwd.jsonl`
-# and load whatever same-named file happens to exist under ~/.claude/projects/.
-# UUID v4 basenames are globally unique in real Claude Code, so on collision we
-# can take candidates[0] — picking by mtime would just add a getmtime race for
-# no observable benefit.
-if not os.path.exists(transcript_path):
-    bn = os.path.basename(transcript_path)
-    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$', bn):
-        candidates = glob.glob(os.path.expanduser(f'~/.claude/projects/*/{bn}'))
-        if candidates:
-            transcript_path = candidates[0]
-if not os.path.exists(transcript_path):
-    emit('FAIL', f'transcript not found at {transcript_path}')
-
 def git(*args) -> str:
     cmd = ['git']
     if git_c_path:
@@ -429,6 +405,30 @@ except Exception as exc:
 
 if review_decision.tier == 'L0':
     emit('PASS', 'L0 documentation-only diff; no model review required')
+
+if not transcript_path:
+    emit('FAIL', 'hook input has no transcript_path')
+
+# Worktree fallback: in some setups (e.g. Claude session started in a parent
+# repo, then cwd switched into a worktree under .claude/worktrees/), Claude
+# Code encodes transcript_path against cwd but writes the jsonl under the
+# parent repo's project dir. The literal path then doesn't exist. Fall back
+# to a basename search under ~/.claude/projects/*/.
+#
+# Strict UUID regex on the basename: rejects non-UUID names so an attacker (or
+# a buggy wrapper) can't make the hook resolve `transcript_path = passwd.jsonl`
+# and load whatever same-named file happens to exist under ~/.claude/projects/.
+# UUID v4 basenames are globally unique in real Claude Code, so on collision we
+# can take candidates[0] — picking by mtime would just add a getmtime race for
+# no observable benefit.
+if not os.path.exists(transcript_path):
+    bn = os.path.basename(transcript_path)
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$', bn):
+        candidates = glob.glob(os.path.expanduser(f'~/.claude/projects/*/{bn}'))
+        if candidates:
+            transcript_path = candidates[0]
+if not os.path.exists(transcript_path):
+    emit('FAIL', f'transcript not found at {transcript_path}')
 
 def select_packet_diff(source: str, selected_files: tuple[str, ...]) -> str:
     selected = set(selected_files)

@@ -294,3 +294,67 @@ def test_result_for_another_target_sha_is_rejected(tmp_path):
 
     assert result.returncode == 0
     assert "target does not match" in result.stdout
+
+
+def test_docs_only_push_does_not_require_a_transcript(tmp_path):
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Push Guard Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+    (repo / "README.md").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "基线"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", str(remote)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "push", "-qu", "origin", "main"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "fetch", "-q", "origin", "main"],
+        check=True,
+    )
+    (repo / "docs").mkdir()
+    (repo / "docs" / "README.md").write_text("docs only\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "文档"],
+        check=True,
+    )
+
+    env = os.environ.copy()
+    env["PUSH_GUARD_PROFILE"] = "balanced"
+    bash = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
+    result = subprocess.run(
+        [str(bash), str(HOOK_SCRIPT)],
+        cwd=repo,
+        input=json.dumps(
+            {
+                "tool_name": "functions.exec_command",
+                "tool_input": {"cmd": "git push origin main"},
+                "transcript_path": "",
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""

@@ -12,6 +12,7 @@
 
 ## 开发记录
 
+- [2026-09-16：手动审查档位成本基准](benchmarks/2026-09-16-review-profile-cost-baseline.md)
 - [2026-09-09：本地基准导致直接放行](lessons/2026-09-09-local-base-bypass.md)
 - [2026-09-10：marketplace 版本号手工副本漂移](lessons/2026-09-10-marketplace-version-drift.md)
 - [2026-09-10：D7 跳过关键词表与 shell 语法冲突](lessons/2026-09-10-skip-scan-false-positive.md)
