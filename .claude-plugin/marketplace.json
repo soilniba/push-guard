@@ -7,7 +7,6 @@
   "plugins": [
     {
       "name": "push-guard",
-      "version": "1.9.0",
       "description": "Bounded pre-push code safety review with manual profiles, L0/L1/L2 risk tiers, and a strict compatibility mode. Hook blocks git push until the selected review completes.",
       "source": "./",
       "author": {

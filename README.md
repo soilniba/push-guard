@@ -102,6 +102,15 @@ Codex loads plugin hooks from `hooks/hooks.json`. The hook reads both standard a
 `custom_tool_call` Codex transcript events, then blocks `git push` until
 `push-guard:pre-push-review` has emitted the required 7-dimension report.
 
+### Updating a local plugin checkout
+
+The client hook is loaded from the installed plugin cache, not directly from the
+working tree. After changing hooks or launcher code, update the plugin version
+in the manifests, reinstall it from the local marketplace, and start a new
+Codex/Claude Code thread so the new `PreToolUse` hook is loaded. Do not use a
+Git `pre-push` hook as a substitute: the push gate belongs to the client hook
+layer.
+
 ## Manual Skill Invocation
 
 You can also invoke the skill directly without waiting for a blocked push:

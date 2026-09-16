@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 HOOK_CONFIG = ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = ROOT / "hooks" / "check-push-guard.sh"
 HOOK_LAUNCHER = ROOT / "hooks" / "run_push_guard.cmd"
+CODEX_MANIFEST = ROOT / ".codex-plugin" / "plugin.json"
+CLAUDE_MANIFEST = ROOT / ".claude-plugin" / "plugin.json"
+PACKAGE_MANIFEST = ROOT / "package.json"
+CODEX_MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
+CLAUDE_MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 FIXTURE_DIR = ROOT / "tests" / "fixtures"
 
 
@@ -100,6 +105,23 @@ def test_hook_matches_claude_and_codex_execution_tools():
     assert matcher.search("Bash")
     assert matcher.search("exec")
     assert matcher.search("functions.exec_command")
+
+
+def test_plugin_release_version_refreshes_client_hook_cache():
+    manifests = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (CODEX_MANIFEST, CLAUDE_MANIFEST, PACKAGE_MANIFEST)
+    ]
+    marketplaces = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (CODEX_MARKETPLACE, CLAUDE_MARKETPLACE)
+    ]
+
+    assert {manifest["version"] for manifest in manifests} == {"1.9.1"}
+    assert all(
+        "version" not in marketplace["plugins"][0]
+        for marketplace in marketplaces
+    )
 
 
 def test_hook_uses_cross_platform_python_launcher():
