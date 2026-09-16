@@ -28,6 +28,7 @@ D7 SKIPPED — app/router.py:0 (no test change)
 _RESULT_RE = re.compile(r"(?im)^\s*RESULT\s+([A-Z]+)\s*$")
 _SEVERITY_RE = re.compile(r"(?im)^\s*SEVERITY\s+(.+?)\s*$")
 _SUMMARY_RE = re.compile(r"(?im)^\s*SUMMARY\s+(.+?)\s*$")
+_TARGET_SHA_RE = re.compile(r"(?im)^\s*TARGET_SHA\s+([0-9a-fA-F]+)\s*$")
 _FINDING_RE = re.compile(r"^\s*FINDING\s+(.+?):(\d+)\s*(.*?)\s*$", re.I)
 _REASON_RE = re.compile(r"^\s*REASON\s+(.+?)\s*$", re.I)
 _NOTE_RE = re.compile(r"^\s*NOTE\s+(.+?)\s*$", re.I)
@@ -49,6 +50,7 @@ class ReviewResult:
     status: ReviewStatus
     severity: str = "none"
     summary: str = ""
+    target_sha: str | None = None
     findings: tuple[Finding, ...] = ()
     notes: tuple[str, ...] = ()
     legacy_dimensions: tuple[int, ...] = ()
@@ -102,8 +104,10 @@ def parse_review_result(text: str, profile: str) -> ReviewResult:
 
     severity_match = _SEVERITY_RE.search(text)
     summary_match = _SUMMARY_RE.search(text)
+    target_match = _TARGET_SHA_RE.search(text)
     severity = severity_match.group(1).strip().lower() if severity_match else "none"
     summary = summary_match.group(1).strip() if summary_match else ""
+    target_sha = target_match.group(1) if target_match else None
 
     findings: list[Finding] = []
     notes: list[str] = []
@@ -145,6 +149,7 @@ def parse_review_result(text: str, profile: str) -> ReviewResult:
         status=status,  # type: ignore[arg-type]
         severity=severity,
         summary=summary,
+        target_sha=target_sha,
         findings=tuple(findings),
         notes=tuple(notes),
     )
@@ -177,7 +182,18 @@ def validate_review_result(
     """Validate packet provenance for a result that would block a push."""
 
     if result.status == "PASS":
+        if result.target_sha and result.target_sha != packet.target_sha:
+            return Validation(
+                False,
+                "review result target does not match the pushed target",
+            )
         return Validation(True, "PASS is non-blocking")
+
+    if result.target_sha and result.target_sha != packet.target_sha:
+        return Validation(
+            False,
+            "review result target does not match the pushed target",
+        )
 
     changed_files = {
         path.replace("\\", "/")

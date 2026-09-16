@@ -1,0 +1,3 @@
+{"type":"response_item","timestamp":"__TIMESTAMP__","payload":{"type":"message","role":"assistant","content":[{"type":"input_text","text":"push-guard:pre-push-review"}]}}
+{"type":"response_item","timestamp":"__TIMESTAMP__","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"Get-Content __READ_FILE__\"}"}}
+{"type":"response_item","timestamp":"__TIMESTAMP__","payload":{"type":"message","role":"assistant","content":[{"type":"input_text","text":"RESULT PASS\nSEVERITY none\nSUMMARY 未发现明确的阻断级问题"}]}}

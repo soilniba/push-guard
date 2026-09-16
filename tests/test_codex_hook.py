@@ -3,12 +3,14 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK_CONFIG = ROOT / "hooks" / "hooks.json"
 HOOK_SCRIPT = ROOT / "hooks" / "check-push-guard.sh"
+FIXTURE_DIR = ROOT / "tests" / "fixtures"
 
 
 def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
@@ -21,6 +23,7 @@ def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
         raise RuntimeError("bash is required to run hook regression tests")
     env = os.environ.copy()
     env["PLUGIN_ROOT"] = str(ROOT)
+    env["PUSH_GUARD_PROFILE"] = "balanced"
     return subprocess.run(
         [bash, "hooks/check-push-guard.sh"],
         cwd=ROOT,
@@ -30,6 +33,26 @@ def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
         check=False,
         timeout=30,
         env=env,
+    )
+
+
+def _run_fixture(name: str, tmp_path: Path, read_file: str | None = None):
+    fixture = (FIXTURE_DIR / name).read_text(encoding="utf-8")
+    fixture = fixture.replace(
+        "__TIMESTAMP__",
+        datetime.now(timezone.utc).isoformat(),
+    )
+    if read_file is None:
+        read_file = str(ROOT / "hooks" / "review_policy.py")
+    fixture = fixture.replace("__READ_FILE__", read_file.replace("\\", "/"))
+    transcript = tmp_path / name
+    transcript.write_text(fixture, encoding="utf-8")
+    return _run_hook(
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        }
     )
 
 
@@ -145,3 +168,129 @@ def test_codex_response_item_user_notifications_are_audited():
 
     assert "p.get('role') == 'user'" in script
     assert "notification_report(text)" in script
+
+
+def test_claude_fixture_accepts_normalized_pass_without_seven_citations(tmp_path):
+    result = _run_fixture("claude_transcript.jsonl", tmp_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_codex_fixture_accepts_get_content_as_read_evidence(tmp_path):
+    result = _run_fixture("codex_transcript.jsonl", tmp_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
+    tmp_path,
+):
+    timestamp = datetime.now(timezone.utc).isoformat()
+    events = [
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Skill",
+                        "input": {"skill": "push-guard:pre-push-review"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {
+                            "file_path": str(ROOT / "hooks" / "review_policy.py")
+                        },
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "RESULT BLOCK\n"
+                            "SEVERITY high\n"
+                            "FINDING hooks/review_policy.py:1\n"
+                            "REASON 发现明确风险"
+                        ),
+                    }
+                ]
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "RESULT BLOCK\n"
+                            "FINDING hooks/review_policy.py:1\n"
+                            "REASON 冒充独立 reviewer"
+                        ),
+                    }
+                ],
+            },
+        },
+    ]
+    transcript = tmp_path / "unregistered.jsonl"
+    transcript.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    result = _run_hook(
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        }
+    )
+
+    assert result.returncode == 0
+    assert "independent reviewer" in result.stdout
+
+
+def test_result_for_another_target_sha_is_rejected(tmp_path):
+    fixture = (FIXTURE_DIR / "claude_transcript.jsonl").read_text(encoding="utf-8")
+    fixture = fixture.replace(
+        "__TIMESTAMP__",
+        datetime.now(timezone.utc).isoformat(),
+    ).replace(
+        "__READ_FILE__",
+        str(ROOT / "hooks" / "review_policy.py").replace("\\", "/"),
+    ).replace(
+        "RESULT PASS\\nSEVERITY none",
+        "RESULT PASS\\nTARGET_SHA deadbeef\\nSEVERITY none",
+    )
+    transcript = tmp_path / "wrong-target.jsonl"
+    transcript.write_text(fixture, encoding="utf-8")
+    result = _run_hook(
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        }
+    )
+
+    assert result.returncode == 0
+    assert "target does not match" in result.stdout

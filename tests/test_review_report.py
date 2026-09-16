@@ -68,3 +68,22 @@ def test_block_must_reference_a_file_in_the_packet():
 def test_unknown_result_status_is_rejected():
     with pytest.raises(ValueError):
         parse_review_result("RESULT MAYBE\nSUMMARY 不确定", profile="balanced")
+
+
+def test_target_sha_mismatch_is_rejected_by_packet_validation():
+    packet = ReviewPacket(
+        target_sha="abc123",
+        base_ref="origin/master",
+        tier="L1",
+        profile="balanced",
+        high_priority_files=("app/router.py",),
+        changed_files=("app/router.py",),
+        diff="",
+    )
+    result = parse_review_result(
+        "RESULT PASS\nTARGET_SHA deadbeef\nSUMMARY 已完成",
+        profile="balanced",
+    )
+    validation = validate_review_result(result, packet)
+    assert not validation.valid
+    assert "target" in validation.reason
