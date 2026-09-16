@@ -771,6 +771,15 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
         ptype = p.get('type')
         if ptype == 'message' and p.get('role') == 'assistant':
             main_texts.extend(text_parts(p.get('content')))
+        elif ptype == 'message' and p.get('role') == 'user':
+            # Codex records harness-delivered subagent notifications as
+            # response_item/message user records, not legacy type=user
+            # transcript events. Only accept a completed report when the
+            # notification names an independent reviewer registered above.
+            for text in text_parts(p.get('content')):
+                report = notification_report(text)
+                if report:
+                    sub_texts.append(report)
         elif ptype == 'function_call':
             name = p.get('name') or ''
             args = parse_arguments(p.get('arguments'))

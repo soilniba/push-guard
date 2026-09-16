@@ -138,3 +138,10 @@ def test_multi_agent_v1_reviewer_notifications_are_supported():
     assert "multi_agent_v1" in script
     assert "subagent_notification" in script
     assert "agent_id" in script
+
+
+def test_codex_response_item_user_notifications_are_audited():
+    script = HOOK_SCRIPT.read_text(encoding="utf-8")
+
+    assert "p.get('role') == 'user'" in script
+    assert "notification_report(text)" in script
