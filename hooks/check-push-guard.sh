@@ -510,6 +510,7 @@ SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
 # identity; an ACK for the same call must then establish the canonical agent
 # path before a report is accepted.
 CODEX_INDEPENDENT_TASK_RE = re.compile(r'^push_guard_independent(?:_[1-9][0-9]*)?$')
+MULTI_AGENT_NAMESPACE = 'multi_agent_v1'
 # How the harness wraps a peer/subagent message delivered to this session.
 PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
 # Some harness builds deliver a subagent's report neither as a tool_result (the
@@ -574,6 +575,49 @@ def command_mentions_diff_read(cmd: str) -> set[str]:
 
 def is_codex_independent_task(task_name) -> bool:
     return isinstance(task_name, str) and bool(CODEX_INDEPENDENT_TASK_RE.fullmatch(task_name))
+
+def has_reviewer_signature(args: dict) -> bool:
+    """Check visible multi-agent arguments for the reviewer signature."""
+    message = args.get('message')
+    if isinstance(message, str) and SUBAGENT_SIGNATURE in message:
+        return True
+    items = args.get('items')
+    if isinstance(items, list):
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get('text'), str)
+            and SUBAGENT_SIGNATURE in item.get('text')
+            for item in items
+        )
+    return False
+
+def notification_report(raw: str) -> str:
+    """Read a harness-written multi-agent notification tied to a real spawn."""
+    if not isinstance(raw, str) or '<subagent_notification>' not in raw:
+        return ''
+    match = re.search(
+        r'<subagent_notification>\s*(\{.*?\})\s*</subagent_notification>',
+        raw,
+        re.S,
+    )
+    if not match:
+        return ''
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return ''
+    agent_path = payload.get('agent_path')
+    if not isinstance(agent_path, str) or agent_path not in codex_independent_agents:
+        return ''
+    status = payload.get('status')
+    if isinstance(status, str):
+        return status
+    if isinstance(status, dict):
+        for key in ('completed', 'result', 'message'):
+            report = status.get(key)
+            if isinstance(report, str):
+                return report
+    return ''
 
 def code_marker_positions(source: str, marker: str):
     """Yield marker positions outside simple JavaScript strings/comments."""
@@ -681,6 +725,10 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
     elif etype == 'user':
         raw = msg.get('content')
         if isinstance(raw, str):
+            report = notification_report(raw)
+            if report:
+                sub_texts.append(report)
+                continue
             # A backgrounded subagent reports through a peer delivery — a
             # user-side STRING message — while its Agent tool_result carries
             # only spawn metadata (just "Spawned successfully..."). Without
@@ -729,15 +777,22 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             cmd = args.get('cmd') or args.get('command') or ''
             for df in command_mentions_diff_read(cmd):
                 read_files.add(df)
-            if (
+            legacy_independent = (
                 name == 'spawn_agent'
                 and p.get('namespace') == 'collaboration'
                 and is_codex_independent_task(args.get('task_name'))
                 and args.get('fork_turns') == 'none'
-            ):
+            )
+            harness_independent = (
+                name == 'spawn_agent'
+                and p.get('namespace') == MULTI_AGENT_NAMESPACE
+                and args.get('fork_context') is False
+                and has_reviewer_signature(args)
+            )
+            if legacy_independent or harness_independent:
                 aid = p.get('call_id') or p.get('id')
                 if aid:
-                    codex_pending_agents[aid] = i
+                    codex_pending_agents[aid] = (i, harness_independent)
         elif ptype == 'function_call_output':
             cid = p.get('call_id') or p.get('id')
             if cid in agent_ids:
@@ -746,14 +801,20 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                     sub_texts.append(out)
             if cid in codex_pending_agents:
                 ack = parse_arguments(p.get('output'))
-                task_name = ack.get('task_name')
-                if (
-                    i > codex_pending_agents[cid]
-                    and isinstance(task_name, str)
-                    and '/' in task_name
-                    and is_codex_independent_task(task_name.rsplit('/', 1)[-1])
-                ):
-                    codex_independent_agents[task_name] = i
+                pending_at, harness_independent = codex_pending_agents[cid]
+                if i > pending_at and harness_independent:
+                    agent_id = ack.get('agent_id')
+                    if isinstance(agent_id, str) and agent_id:
+                        codex_independent_agents[agent_id] = i
+                        agent_ids.add(agent_id)
+                elif i > pending_at:
+                    task_name = ack.get('task_name')
+                    if (
+                        isinstance(task_name, str)
+                        and '/' in task_name
+                        and is_codex_independent_task(task_name.rsplit('/', 1)[-1])
+                    ):
+                        codex_independent_agents[task_name] = i
         elif ptype == 'custom_tool_call' and p.get('name') == 'exec':
             for cmd in custom_tool_commands(p):
                 for df in command_mentions_diff_read(cmd):

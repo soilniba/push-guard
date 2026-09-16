@@ -130,3 +130,11 @@ def test_codex_custom_tool_call_exec_is_supported_by_transcript_audit_helpers():
 
     assert "custom_tool_call" in script
     assert 'p.get(\'name\') == \'exec\'' in script
+
+
+def test_multi_agent_v1_reviewer_notifications_are_supported():
+    script = HOOK_SCRIPT.read_text(encoding="utf-8")
+
+    assert "multi_agent_v1" in script
+    assert "subagent_notification" in script
+    assert "agent_id" in script
