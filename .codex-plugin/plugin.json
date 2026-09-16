@@ -1,7 +1,7 @@
 {
   "name": "push-guard",
-  "version": "1.7.0+codex.20260916054744",
-  "description": "Pre-push code safety review skill and hook for Codex and Claude Code.",
+  "version": "1.9.0",
+  "description": "Bounded pre-push code safety review skill and hook for Codex and Claude Code.",
   "author": {
     "name": "soilniba"
   },
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Push Guard",
     "shortDescription": "Block git push until a structured safety review is present",
-    "longDescription": "Push Guard provides a pre-push review skill and lifecycle hook that checks modified code across exception paths, encoding boundaries, external data validation, state invariants, secrets, semantic correctness, and test quality before git push.",
+    "longDescription": "Push Guard provides manual review profiles, L0/L1/L2 diff-risk tiers, and a bounded PASS/BLOCK/NOTE pre-push review for Codex and Claude Code. Strict mode retains the legacy seven-dimension checklist.",
     "developerName": "soilniba",
     "category": "Developer Tools",
     "capabilities": [

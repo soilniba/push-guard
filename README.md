@@ -1,14 +1,45 @@
 # push-guard
 
-Pre-push code safety review plugin for Claude Code. Works with any language.
+Pre-push code safety review plugin for Claude Code and Codex. Works with any
+language and keeps the same risk and blocking semantics in both environments.
 
-Blocks `git push` (executed via Claude's Bash tool) until a systematic 7-dimension code review is completed. The hook does not start that review on its own: it asks you to choose between running the review (and pushing) and abandoning the push.
+Blocks `git push` until the user chooses whether to run the review or abandon
+the push. The default review is bounded and looks for clear, severe,
+diff-verifiable bugs; the historical 7-dimension protocol remains available in
+the manually selected `strict` profile.
 
 ## 文档
 
 设计、需求原文和开发记录见 [docs/README.md](docs/README.md)。
 
+## 手动审查档位
+
+The plugin never reads, guesses, or scores model capability. Select the review
+profile manually when the model or project risk changes:
+
+```bash
+PUSH_GUARD_PROFILE=fast
+PUSH_GUARD_PROFILE=balanced
+PUSH_GUARD_PROFILE=strict
+```
+
+`balanced` is the default. `fast` and `balanced` use one normalized
+`PASS/BLOCK/NOTE` review. `strict` retains the legacy seven-dimension report
+and its compatibility checks.
+
 ## What It Checks
+
+The mechanical policy classifies the target diff:
+
+| Tier | Behavior |
+|---|---|
+| L0 | Documentation-only changes pass without a model review |
+| L1 | Ordinary executable changes receive one bounded review |
+| L2 | Hook, permission, command, migration, lock, retry, task/target, and other high-risk changes receive focused review |
+
+Large line counts or file counts alone do not start an independent reviewer.
+For L2, an independent reviewer is used at most once and only after the main
+review returns `BLOCK`.
 
 | Dimension | What |
 |---|---|
@@ -20,13 +51,23 @@ Blocks `git push` (executed via Claude's Bash tool) until a systematic 7-dimensi
 | 6. Semantic logic correctness | Variables, units, formulas, and return values match their meaning |
 | 7. Test quality | Tests exercise real behavior, boundaries, and failure paths |
 
+The table above describes the legacy checklist retained for `strict`. In the
+default profiles, these checks are internal guidance rather than seven
+mandatory citations.
+
 ## How It Works
 
 1. `PreToolUse` hook intercepts every Bash tool call
 2. If the command contains `git push`, the hook resolves the target commit and the remote-tracking diff base
-3. The hook reads the session transcript and verifies the skill invocation, modified-file read, and 7-dimension report
-4. Missing or invalid evidence blocks the push and asks you to choose: run the review, or abandon the push
-5. Every new target commit is checked against the remote-tracking base; if no base exists, the target is checked against the empty tree
+3. The hook classifies the diff as L0/L1/L2 and creates a target-scoped review packet
+4. The hook reads the session transcript and verifies the selected profile's result and equivalent file-read evidence
+5. Missing or invalid evidence blocks the push and asks you to choose: run the review, or abandon the push
+6. Every new target commit is checked against the remote-tracking base; if no base exists, the target is checked against the empty tree
+
+Protocol failures are reported as plugin protocol or environment problems,
+not silently labeled as code defects. A target commit cannot trigger an
+unbounded semantic-review loop; at most one protocol repair and one L2
+independent review are allowed.
 
 ### Why remote-tracking based?
 

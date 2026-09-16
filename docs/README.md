@@ -4,6 +4,11 @@
 - [设计决策：使用远端跟踪分支作为审查基准](decisions/0001-remote-tracking-diff-base.md)
 - [设计决策：审查前由用户选择，放弃是允许的结局](decisions/0002-user-consent-before-review.md)
 - [设计决策：判定不出"是不是 push"时一律拦住](decisions/0003-fail-closed-degraded-mode.md)
+- [设计决策：手动审查档位、风险分级与跨 Codex/Claude Code 兼容](decisions/0004-manual-review-profile-cost-control.md)
+
+## 实施计划
+
+- [手动审查档位与成本控制实施计划](superpowers/plans/2026-09-16-manual-review-profile-cost-control.md)
 
 ## 开发记录
 
