@@ -17,6 +17,9 @@ If it is not set, use `balanced`.
 - `strict` uses the legacy seven-dimension protocol in the final section.
 - L0/L1/L2 describe only the risk of the current diff; they do not describe
   model quality.
+- L0 is mechanical. Every L1/L2 review, regardless of profile, must be
+  performed by one isolated review subagent. The current session is only the
+  coordinator and must never self-review from its own conversation history.
 - Unless the profile is `strict`, ignore every section explicitly marked
   **strict-mode legacy**. Do not emit seven dimension lines in the default
   protocol.
@@ -62,7 +65,9 @@ review_profile=<fast|balanced>
 tier=<L0|L1|L2>
 ```
 
-Read only the listed high-priority files and changed sections. `Read`,
+The coordinator may inspect the packet to establish read evidence, but it must
+not form or emit a semantic verdict. The actual reviewer must read only the
+listed high-priority files and changed sections. `Read`,
 `functions.exec_command`, `custom_tool_call`, `cat`, `sed`, `nl`, `head`,
 `tail`, PowerShell `Get-Content`, `git diff`, and `git show` are equivalent
 ways to read evidence. Do not reread the whole repository or unrelated history.
@@ -72,7 +77,48 @@ skill. L1 receives one bounded review. L2 is reserved for hooks, permissions,
 authentication, command execution, migrations, locks, retries, task recovery,
 target selection, routing, and other directly evidenced high-risk changes.
 
-### Step 2: Perform one focused semantic scan
+### Step 2: Run one isolated semantic review subagent
+
+For every L1 or L2 diff, spawn exactly one fresh-context review subagent before
+deciding the result. Do not review the diff yourself and do not emit a
+`RESULT` line in the coordinator session. The hook ignores coordinator
+verdicts and accepts only the report delivered by a registered subagent.
+
+- **Claude Code:** invoke the `Agent` tool with `subagent_type:
+  "general-purpose"`.
+- **Codex:** invoke `multi_agent_v1` with `fork_context: false`; use the
+  reserved task name `push_guard_review` (or its numeric suffix if needed).
+
+The prompt must start with this signature and include the packet's exact
+`target_sha`, `base_ref`, `review_profile`, `tier`, and high-priority files:
+
+```text
+[PUSH-GUARD-REVIEW v2]
+
+You are the isolated review subagent. You have no parent conversation history.
+Do not invoke this skill, read project memory, inspect unrelated history,
+modify files, or run tests. Review only the supplied push packet and its diff.
+
+For fast/balanced, emit:
+RESULT PASS
+SEVERITY none
+SUMMARY <short summary>
+
+or, only for a clear severe bug proven by the diff:
+RESULT BLOCK
+SEVERITY high
+FINDING <changed-file>:<positive-line>
+REASON <short reason>
+
+For strict, emit the seven legacy D1-D7 lines required by the final section.
+Read the packet's changed sections before deciding, then emit the report and
+stop. Do not include a coordinator/self-review result.
+```
+
+If the subagent report has a protocol problem, repair that report once and
+stop. Do not fall back to a coordinator self-review.
+
+### Step 3: Subagent performs one focused semantic scan
 
 Check only for a clear blocking defect in the changed code:
 
@@ -83,9 +129,9 @@ Check only for a clear blocking defect in the changed code:
 - a regression directly demonstrated by the diff.
 
 Do not repair code, run tests, or expand into unrelated files during this scan.
-The main reviewer runs at most once for this target commit.
+The review subagent runs at most once for this target commit.
 
-### Step 3: Emit the normalized result
+### Step 4: Subagent emits the normalized result
 
 For a clean review:
 
@@ -116,14 +162,13 @@ NOTE 某极端环境未在当前 diff 中验证，但没有发现正常路径故
 `file:line` finding. Emit no more than three findings. Do not output a second
 semantic review for the same target commit.
 
-### Step 4: Bounded L2 independent check
+### Step 5: Relay the subagent result
 
-For `fast`/`balanced`, do not start an independent reviewer for L0 or L1, and
-do not start one merely because the diff is large. For L2, start at most one
-independent reviewer only after the main result is `BLOCK`. Compare only
-`BLOCK` versus non-`BLOCK`; differences in wording or legacy labels are not
-blocking. If the independent result cannot be delivered or parsed, report a
-plugin protocol problem and stop after one format repair.
+The coordinator must not add a second semantic review or compare the result
+against its own verdict. If the registered subagent returns `BLOCK`, leave the
+push blocked. If it returns `PASS`, retry the push so the hook can validate the
+subagent delivery. A missing, unregistered, or malformed subagent report is a
+plugin protocol problem, not permission to self-review.
 
 ---
 
@@ -260,25 +305,28 @@ For every external call (`subprocess.run`, file I/O, network request, DB query, 
 
 ---
 
-### Step 3.5: Independent Reviewer Subagent (REQUIRED for large diffs)
+### Step 3.5: Isolated Reviewer Subagent (REQUIRED for every non-L0 diff)
 
-The hook treats a diff as **large** when it adds more than 30 lines OR touches more than 2 files. For a large diff, you must spawn an independent reviewer subagent and the hook will compare its 7-dimension verdicts against yours per dimension. Mismatch on any dimension blocks the push.
-
-**Why:** the same agent that wrote the code also reviews it. A fresh-context subagent reading the diff cold catches blind spots that confirmation bias missed. Verdict agreement across two independent passes is much stronger evidence than a single self-review.
-
-**Small diffs** (≤30 added lines AND ≤2 files): subagent is optional, but if you spawn one its verdict still must agree.
+Strict mode also runs entirely in one fresh-context review subagent. The
+coordinator must not emit a seven-dimension report or compare the subagent's
+report against its own review. A large diff does not start a second reviewer;
+the risk tier controls the packet and protocol, not whether the coordinator
+self-reviews.
 
 **How to spawn:**
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below. Copy it literally; the bracketed signature on the first line is mandatory.
-- **Codex:** invoke `collaboration.spawn_agent` with `task_name: "push_guard_independent"` and `fork_turns: "none"`, using the same prompt below as `message`. If that task name was already used in this session, use the next numeric round name such as `"push_guard_independent_2"`. The hook verifies this isolated spawn, its ACK, and the returning agent message as one chain.
+- **Codex:** invoke `multi_agent_v1` with `fork_context: false` and task name
+  `push_guard_review` (or its numeric suffix), using the same prompt below as
+  the message. The hook verifies this isolated spawn, its ACK, and the
+  returning agent message as one chain.
 
 Use this review prompt:
 
 ```
-[PUSH-GUARD-INDEPENDENT-REVIEW v1]
+[PUSH-GUARD-REVIEW v2]
 
-You are an independent code reviewer. You have NO context from the parent
+You are an isolated code reviewer. You have NO context from the parent
 conversation, NO access to project memory, and you MUST NOT invoke any Skill,
 MUST NOT read ~/.claude/CLAUDE.md, MUST NOT read project memory files under
 .claude/projects/*/memory/, and MUST NOT read .claude/settings.json.
@@ -325,11 +373,16 @@ Process:
      summary, no recommendations.
 ```
 
-After the subagent returns, the hook will parse its 7-line report from the Claude `Agent` tool_result or Codex agent message and require D1-D7 verdicts to match yours. If they disagree, neither push goes through; reconcile the disagreement (fix the code, or re-examine your verdict, or the subagent's) and re-emit both reports.
+After the subagent returns, the hook will parse its 7-line report from the
+Claude `Agent` tool_result or Codex agent message. The coordinator must not
+emit a second report; if the subagent report cannot be delivered or parsed,
+repair that subagent report once and stop.
 
-### Step 4: Emit the Report (REQUIRED FORMAT)
+### Step 4: Return the Subagent Report (REQUIRED FORMAT)
 
-Output **exactly seven** lines, one per dimension, in this format:
+The review subagent must output **exactly seven** lines, one per dimension, in
+this format. The coordinator must only relay the subagent result and must not
+author a replacement report:
 
 ```
 D{N} {VERDICT} — {file}:{line} ({reason ≤80 chars})

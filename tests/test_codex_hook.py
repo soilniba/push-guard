@@ -7,6 +7,7 @@ import subprocess
 from hooks import run_push_guard
 from datetime import datetime, timezone
 from pathlib import Path
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,31 @@ def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_hook_in_repo(
+    repo: Path,
+    payload: dict,
+    profile: str = "balanced",
+) -> subprocess.CompletedProcess[str]:
+    bash = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
+    if not bash.exists():
+        raise RuntimeError("Git Bash is required to run hook regression tests")
+    env = os.environ.copy()
+    env["PLUGIN_ROOT"] = str(ROOT)
+    env["PUSH_GUARD_PROFILE"] = profile
+    return subprocess.run(
+        [str(bash), str(HOOK_SCRIPT)],
+        cwd=repo,
+        input=json.dumps(payload),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=env,
+    )
+
+
 def _make_unpushed_repo(tmp_path: Path) -> Path:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
@@ -73,6 +99,135 @@ def _make_unpushed_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _write_review_transcript(
+    path: Path,
+    *,
+    read_file: str,
+    result: str,
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    events = [
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Skill",
+                        "input": {"skill": "push-guard:pre-push-review"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": read_file},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {"content": [{"type": "text", "text": result}]},
+        },
+    ]
+    path.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
+def _write_subagent_review_transcript(
+    path: Path,
+    *,
+    read_file: str,
+    result: str,
+) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    events = [
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Skill",
+                        "input": {"skill": "push-guard:pre-push-review"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": read_file},
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Agent",
+                        "id": "review-agent-call",
+                        "input": {
+                            "name": "push-guard-reviewer",
+                            "prompt": (
+                                "[PUSH-GUARD-REVIEW v2]\n"
+                                "Review only the push packet and return the result."
+                            ),
+                        },
+                    },
+                ]
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "RESULT BLOCK\n"
+                            "SEVERITY high\n"
+                            "FINDING app.py:1\n"
+                            "REASON parent history must not control the review"
+                        ),
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": timestamp,
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "review-agent-call",
+                        "content": [{"type": "text", "text": result}],
+                    }
+                ]
+            },
+        },
+    ]
+    path.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+
 def _run_fixture(name: str, tmp_path: Path, read_file: str | None = None):
     fixture = (FIXTURE_DIR / name).read_text(encoding="utf-8")
     fixture = fixture.replace(
@@ -93,6 +248,194 @@ def _run_fixture(name: str, tmp_path: Path, read_file: str | None = None):
     )
 
 
+@pytest.mark.parametrize(
+    ("profile", "result"),
+    [
+        ("fast", "RESULT PASS\nSEVERITY none\nSUMMARY clean"),
+        ("balanced", "RESULT PASS\nSEVERITY none\nSUMMARY clean"),
+        (
+            "strict",
+            "\n".join(
+                [
+                    "D1 CLEAN — app.py:1 (no external call)",
+                    "D2 SKIPPED — app.py:0 (no encoding boundary)",
+                    "D3 SKIPPED — app.py:0 (no external input)",
+                    "D4 SKIPPED — app.py:0 (no state machine)",
+                    "D5 SKIPPED — app.py:0 (no credentials)",
+                    "D6 CLEAN — app.py:1 (ordinary logic)",
+                    "D7 SKIPPED — app.py:0 (no test change)",
+                ]
+            ),
+        ),
+    ],
+)
+def test_model_review_requires_a_registered_subagent_for_every_profile(
+    tmp_path,
+    profile,
+    result,
+):
+    repo = _make_unpushed_repo(tmp_path)
+    transcript = tmp_path / f"{profile}-self-review.jsonl"
+    _write_review_transcript(
+        transcript,
+        read_file=str(repo / "app.py"),
+        result=result,
+    )
+
+    hook_result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        },
+        profile=profile,
+    )
+
+    assert hook_result.returncode == 0
+    assert "registered review subagent" in hook_result.stdout
+
+
+def test_registered_subagent_result_is_the_l1_review_authority(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    transcript = tmp_path / "subagent-review.jsonl"
+    _write_subagent_review_transcript(
+        transcript,
+        read_file=str(repo / "app.py"),
+        result="RESULT PASS\nSEVERITY none\nSUMMARY clean",
+    )
+
+    hook_result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        },
+    )
+
+    assert hook_result.returncode == 0
+    assert hook_result.stdout == ""
+
+
+def test_registered_subagent_result_is_the_strict_review_authority(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    transcript = tmp_path / "strict-subagent-review.jsonl"
+    _write_subagent_review_transcript(
+        transcript,
+        read_file=str(repo / "app.py"),
+        result="\n".join(
+            [
+                "D1 CLEAN — app.py:1 (no external call)",
+                "D2 SKIPPED — app.py:0 (no encoding boundary)",
+                "D3 SKIPPED — app.py:0 (no external input)",
+                "D4 SKIPPED — app.py:0 (no state machine)",
+                "D5 SKIPPED — app.py:0 (no credentials)",
+                "D6 CLEAN — app.py:1 (ordinary logic)",
+                "D7 SKIPPED — app.py:0 (no test change)",
+            ]
+        ),
+    )
+
+    hook_result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        },
+        profile="strict",
+    )
+
+    assert hook_result.returncode == 0
+    assert hook_result.stdout == ""
+
+
+def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    transcript = tmp_path / "codex-subagent-review.jsonl"
+    events = [
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "input_text", "text": "push-guard:pre-push-review"}
+                ],
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps({"cmd": "Get-Content app.py"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "collaboration",
+                "call_id": "review-spawn",
+                "arguments": json.dumps(
+                    {
+                        "task_name": "push_guard_review",
+                        "fork_turns": "none",
+                        "message": "[PUSH-GUARD-REVIEW v2]",
+                    }
+                ),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "review-spawn",
+                "output": json.dumps({"task_name": "agent/push_guard_review"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "agent_message",
+                "author": "agent/push_guard_review",
+                "recipient": "agent",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "RESULT PASS\nSEVERITY none\nSUMMARY clean",
+                    }
+                ],
+            },
+        },
+    ]
+    transcript.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    hook_result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        },
+    )
+
+    assert hook_result.returncode == 0
+    assert hook_result.stdout == ""
+
+
 def test_hook_matches_claude_and_codex_execution_tools():
     config = json.loads(HOOK_CONFIG.read_text(encoding="utf-8"))
     matchers = [
@@ -108,23 +451,25 @@ def test_hook_matches_claude_and_codex_execution_tools():
 
 
 def test_plugin_release_version_refreshes_client_hook_cache():
-    manifests = [
+    codex_manifest = json.loads(CODEX_MANIFEST.read_text(encoding="utf-8"))
+    other_manifests = [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in (CODEX_MANIFEST, CLAUDE_MANIFEST, PACKAGE_MANIFEST)
+        for path in (CLAUDE_MANIFEST, PACKAGE_MANIFEST)
     ]
     marketplaces = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in (CODEX_MARKETPLACE, CLAUDE_MARKETPLACE)
     ]
 
-    assert {manifest["version"] for manifest in manifests} == {"1.9.1"}
+    assert codex_manifest["version"].startswith("1.9.1+codex.")
+    assert {manifest["version"] for manifest in other_manifests} == {"1.9.1"}
     assert all(
         "version" not in marketplace["plugins"][0]
         for marketplace in marketplaces
     )
 
 
-def test_hook_uses_cross_platform_python_launcher():
+def test_hook_uses_claude_rooted_polyglot_launcher_for_both_runtimes():
     config = json.loads(HOOK_CONFIG.read_text(encoding="utf-8"))
     hooks = [
         hook
@@ -134,15 +479,10 @@ def test_hook_uses_cross_platform_python_launcher():
     ]
 
     assert any(
-        hook.get("command", "").startswith('"')
-        and "${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-.}}" in hook.get(
-            "command", ""
-        )
-        and "${PLUGIN_ROOT}" in hook.get("commandWindows", "")
-        and hook.get("command", "").endswith("/hooks/run_push_guard.cmd\"")
-        and hook.get("commandWindows", "").endswith(
-            "/hooks/run_push_guard.cmd\""
-        )
+        hook.get("command")
+        == '"${CLAUDE_PLUGIN_ROOT}/hooks/run_push_guard.cmd"'
+        and hook.get("commandWindows")
+        == '"${PLUGIN_ROOT}/hooks/run_push_guard.cmd"'
         for hook in hooks
     )
 
@@ -153,6 +493,38 @@ def test_hook_launcher_is_a_claude_compatible_polyglot_wrapper():
     assert "@echo off" in script
     assert "PUSH_GUARD_CMD" in script
     assert "run_push_guard.py" in script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="covers the Claude Windows launcher")
+def test_claude_rooted_launcher_runs_without_plugin_root():
+    env = os.environ.copy()
+    env["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+    env.pop("PLUGIN_ROOT", None)
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo bash ok"},
+        "transcript_path": "",
+    }
+
+    result = subprocess.run(
+        [
+            "cmd.exe",
+            "/d",
+            "/c",
+            f"call {HOOK_LAUNCHER}",
+        ],
+        cwd=ROOT,
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 def test_hook_does_not_show_a_status_message_for_every_shell_command():
@@ -391,7 +763,7 @@ def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
     )
 
     assert result.returncode == 0
-    assert "independent reviewer" in result.stdout
+    assert "registered review subagent" in result.stdout
 
 
 def test_result_for_another_target_sha_is_rejected(tmp_path):

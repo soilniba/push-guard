@@ -1,3 +1,3 @@
 {"type":"assistant","timestamp":"__TIMESTAMP__","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"push-guard:pre-push-review"}}]}}
-{"type":"assistant","timestamp":"__TIMESTAMP__","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"__READ_FILE__"}}]}}
-{"type":"assistant","timestamp":"__TIMESTAMP__","message":{"content":[{"type":"text","text":"RESULT PASS\nSEVERITY none\nSUMMARY 未发现明确的阻断级问题"}]}}
+{"type":"assistant","timestamp":"__TIMESTAMP__","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"__READ_FILE__"}},{"type":"tool_use","name":"Agent","id":"review-agent-call","input":{"name":"push-guard-reviewer","prompt":"[PUSH-GUARD-REVIEW v2]\nReview only the push packet."}}]}}
+{"type":"user","timestamp":"__TIMESTAMP__","message":{"content":[{"type":"tool_result","tool_use_id":"review-agent-call","content":[{"type":"text","text":"RESULT PASS\nSEVERITY none\nSUMMARY clean"}]}]}}

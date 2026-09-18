@@ -14,15 +14,16 @@
 # A bare token write cannot bypass; the hook validates that:
 #   1. push-guard:pre-push-review Skill was invoked since HEAD's commit time
 #   2. The Read tool was used on a file in this push's diff
-#   3. The selected profile's normalized PASS/BLOCK result appears after the
-#      Skill invocation. Strict mode retains the legacy seven-dimension format.
+#   3. The selected profile's result comes from a registered, isolated review
+#      subagent after the Skill invocation. Strict mode retains the legacy
+#      seven-dimension format.
 #   4. CLEAN/FIXED cite file:line points into the diff hunks
 #   5. BLOCK findings point into the pushed diff. PASS does not need citations
 #      in fast/balanced modes.
-#   6. The independent reviewer's report is read from whichever record the
-#      harness used to deliver it (tool_result, peer message, queue-operation,
-#      queued_command attachment), and every such record must trace back to a
-#      subagent spawned with the reviewer signature, never to model text
+#   6. The reviewer's report is read from whichever record the harness used to
+#      deliver it (tool_result, peer message, queue-operation, queued_command
+#      attachment), and every such record must trace back to a subagent spawned
+#      with the reviewer signature, never to model text
 #
 # The review is not started automatically: on an unreviewed push the hook denies
 # and instructs the model to let the user choose between running the review (and
@@ -583,17 +584,19 @@ if skill_idx is None:
          f'Skill {SKILL_NAME} was not invoked since HEAD commit ({target_sha[:7]}). '
          f'Run the skill, do the scan, then push.')
 
-# Collect main-agent assistant text + Read tool calls + independent reviewer
-# subagent invocations AFTER the skill invocation. Claude uses Read/Agent
-# events; Codex may record terminal calls as custom_tool_call and agent results
-# as agent_message, so both transcript shapes must be handled.
-SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
+# Collect Read tool calls + review subagent invocations AFTER the skill
+# invocation. The parent session's text is deliberately not a review result:
+# it may contain historical context and is never accepted below.
+SUBAGENT_SIGNATURE = '[PUSH-GUARD-REVIEW v2]'
+LEGACY_SUBAGENT_SIGNATURE = '[PUSH-GUARD-INDEPENDENT-REVIEW v1]'
 # Codex encrypts the spawn message in its transcript, so unlike Claude we
-# cannot inspect it for SUBAGENT_SIGNATURE.  A reserved, isolated task name
+# cannot inspect it for the review signature. A reserved, isolated task name
 # (optionally with a numeric round suffix) is its transcript-level review
 # identity; an ACK for the same call must then establish the canonical agent
 # path before a report is accepted.
-CODEX_INDEPENDENT_TASK_RE = re.compile(r'^push_guard_independent(?:_[1-9][0-9]*)?$')
+CODEX_REVIEW_TASK_RE = re.compile(
+    r'^push_guard_(?:review|independent)(?:_[1-9][0-9]*)?$'
+)
 MULTI_AGENT_NAMESPACE = 'multi_agent_v1'
 # How the harness wraps a peer/subagent message delivered to this session.
 PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
@@ -637,7 +640,6 @@ def delivered_report(payload, agent_ids: set, agent_names: set) -> str:
             if res:
                 return res.group(1)
     return ''
-main_texts = []
 sub_texts = []
 read_files = set()
 agent_ids: set = set()
@@ -669,19 +671,25 @@ def command_mentions_diff_read(cmd: str) -> set[str]:
     return found
 
 def is_codex_independent_task(task_name) -> bool:
-    return isinstance(task_name, str) and bool(CODEX_INDEPENDENT_TASK_RE.fullmatch(task_name))
+    return isinstance(task_name, str) and bool(CODEX_REVIEW_TASK_RE.fullmatch(task_name))
 
 def has_reviewer_signature(args: dict) -> bool:
     """Check visible multi-agent arguments for the reviewer signature."""
     message = args.get('message')
-    if isinstance(message, str) and SUBAGENT_SIGNATURE in message:
+    if isinstance(message, str) and (
+        SUBAGENT_SIGNATURE in message
+        or LEGACY_SUBAGENT_SIGNATURE in message
+    ):
         return True
     items = args.get('items')
     if isinstance(items, list):
         return any(
             isinstance(item, dict)
             and isinstance(item.get('text'), str)
-            and SUBAGENT_SIGNATURE in item.get('text')
+            and (
+                SUBAGENT_SIGNATURE in item.get('text')
+                or LEGACY_SUBAGENT_SIGNATURE in item.get('text')
+            )
             for item in items
         )
     return False
@@ -795,16 +803,18 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             if not isinstance(c, dict):
                 continue
             ctype = c.get('type')
-            if ctype == 'text':
-                main_texts.append(c.get('text') or '')
-            elif ctype == 'tool_use':
+            if ctype == 'tool_use':
                 tool_name = c.get('name') or ''
                 tool_input = c.get('input') or {}
                 if tool_name == 'Agent':
-                    # Only count Agent calls that carry our independent-reviewer
-                    # signature in the prompt. Other agent spawns are unrelated.
+                    # Only count Agent calls that carry the review signature in
+                    # the prompt. Other agent spawns are unrelated.
                     inp = tool_input
-                    if SUBAGENT_SIGNATURE in (inp.get('prompt') or ''):
+                    prompt = inp.get('prompt') or ''
+                    if (
+                        SUBAGENT_SIGNATURE in prompt
+                        or LEGACY_SUBAGENT_SIGNATURE in prompt
+                    ):
                         aid = c.get('id')
                         # Reject id=None: a malformed tool_use without an id
                         # would otherwise let any tool_result lacking
@@ -842,7 +852,7 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             # user-side STRING message — while its Agent tool_result carries
             # only spawn metadata (just "Spawned successfully..."). Without
             # reading the delivery, a large diff can never satisfy the
-            # independent-reviewer gate. Accept a string only when it is
+            # review-subagent gate. Accept a string only when it is
             # wrapped as a harness peer delivery AND comes from an agent that
             # was spawned with the reviewer signature: tool results are lists
             # of tool_result blocks, so nothing the model can echo qualifies.
@@ -878,13 +888,11 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
     elif etype == 'response_item':
         p = codex_payload(e)
         ptype = p.get('type')
-        if ptype == 'message' and p.get('role') == 'assistant':
-            main_texts.extend(text_parts(p.get('content')))
-        elif ptype == 'message' and p.get('role') == 'user':
+        if ptype == 'message' and p.get('role') == 'user':
             # Codex records harness-delivered subagent notifications as
             # response_item/message user records, not legacy type=user
             # transcript events. Only accept a completed report when the
-            # notification names an independent reviewer registered above.
+            # notification names a registered review subagent.
             for text in text_parts(p.get('content')):
                 report = notification_report(text)
                 if report:
@@ -895,7 +903,7 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             cmd = args.get('cmd') or args.get('command') or ''
             for df in command_mentions_diff_read(cmd):
                 read_files.add(df)
-            legacy_independent = (
+            legacy_review = (
                 name == 'spawn_agent'
                 and p.get('namespace') == 'collaboration'
                 and is_codex_independent_task(args.get('task_name'))
@@ -907,7 +915,7 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                 and args.get('fork_context') is False
                 and has_reviewer_signature(args)
             )
-            if legacy_independent or harness_independent:
+            if legacy_review or harness_independent:
                 aid = p.get('call_id') or p.get('id')
                 if aid:
                     codex_pending_agents[aid] = (i, harness_independent)
@@ -954,8 +962,63 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                     ):
                         sub_texts.append(content['text'])
 
-joined_text = '\n'.join(main_texts)
 sub_joined_text = '\n'.join(sub_texts)
+
+# Every non-L0 review is performed by exactly one isolated subagent. The
+# parent session's text is deliberately not a review result: it may contain
+# historical context and is never accepted below.
+reviewer_count = max(
+    len(agent_ids),
+    len(agent_names),
+    len(codex_pending_agents),
+    len(codex_independent_agents),
+)
+if reviewer_count == 0:
+    emit(
+        'FAIL',
+        'code review status: incomplete\n'
+        'blocking issue: unknown\n'
+        'failure type: push-guard protocol problem\n'
+        'remaining action: run one registered review subagent; then stop\n'
+        'detail: the parent session review is not accepted; '
+        'a registered review subagent is required',
+    )
+if reviewer_count > 1:
+    emit(
+        'FAIL',
+        'code review status: incomplete\n'
+        'blocking issue: unknown\n'
+        'failure type: push-guard protocol problem\n'
+        'remaining action: keep one registered review subagent; then stop\n'
+        f'detail: expected one registered review subagent, found {reviewer_count}',
+    )
+if not sub_joined_text.strip():
+    emit(
+        'FAIL',
+        'code review status: incomplete\n'
+        'blocking issue: unknown\n'
+        'failure type: push-guard protocol problem\n'
+        'remaining action: repair the registered review subagent result once; then stop\n'
+        'detail: the registered review subagent did not return a report',
+    )
+
+packet_files = review_packet.files_to_read()
+read_ok = any(
+    any(
+        read_file == packet_file
+        or read_file.endswith('/' + packet_file)
+        for packet_file in packet_files
+    )
+    for read_file in read_files
+)
+if not read_ok:
+    emit(
+        'FAIL',
+        'code review status: complete\n'
+        'failure type: push-guard protocol problem\n'
+        'remaining action: read one high-priority packet file once; then stop\n'
+        f'detail: no equivalent read evidence for {list(packet_files)}',
+    )
 
 if review_decision.profile != 'strict':
     skill_invocations = (
@@ -978,7 +1041,7 @@ if review_decision.profile != 'strict':
 
     try:
         normalized_result = parse_review_result(
-            joined_text,
+            sub_joined_text,
             profile=review_decision.profile,
         )
     except Exception as exc:
@@ -1005,97 +1068,11 @@ if review_decision.profile != 'strict':
             f'detail: {normalized_validation.reason}',
         )
 
-    packet_files = review_packet.files_to_read()
-    read_ok = any(
-        any(
-            read_file == packet_file
-            or read_file.endswith('/' + packet_file)
-            for packet_file in packet_files
-        )
-        for read_file in read_files
-    )
-    if not read_ok:
-        emit(
-            'FAIL',
-            'code review status: complete\n'
-            f'blocking issue: {normalized_result.status == "BLOCK"}\n'
-            'failure type: push-guard protocol problem\n'
-            'remaining action: read one high-priority packet file once; then stop\n'
-            f'detail: no equivalent read evidence for {list(packet_files)}',
-        )
-
-    if (
-        review_decision.tier == 'L2'
-        and normalized_result.status == 'BLOCK'
-    ):
-        independent_count = max(
-            len(agent_names),
-            len(codex_pending_agents),
-        )
-        if independent_count > 1:
-            review_state = ReviewState(
-                target_sha,
-                semantic_review_done=True,
-                protocol_repairs=0,
-                independent_reviews=1,
-            )
-            emit(
-                'FAIL',
-                review_state.protocol_failure_message()
-                + '\n独立 reviewer 最多允许一次',
-            )
-        if not sub_joined_text.strip():
-            emit(
-                'FAIL',
-                'code review status: complete\n'
-                'blocking issue: yes\n'
-                'failure type: push-guard protocol problem\n'
-                'remaining action: run one registered independent reviewer; then stop\n'
-                'detail: L2 BLOCK requires one independent BLOCK/PASS check',
-            )
-        try:
-            independent_result = parse_review_result(
-                sub_joined_text,
-                profile=review_decision.profile,
-            )
-        except Exception as exc:
-            emit(
-                'FAIL',
-                'code review status: complete\n'
-                'blocking issue: yes\n'
-                'failure type: push-guard protocol problem\n'
-                'remaining action: repair the independent result once; then stop\n'
-                f'detail: {exc}',
-            )
-        independent_validation = validate_review_result(
-            independent_result,
-            review_packet,
-        )
-        if not independent_validation.valid:
-            emit(
-                'FAIL',
-                'code review status: complete\n'
-                'blocking issue: yes\n'
-                'failure type: push-guard protocol problem\n'
-                'remaining action: repair the independent finding once; then stop\n'
-                f'detail: {independent_validation.reason}',
-            )
-        if independent_result.status != normalized_result.status:
-            emit(
-                'FAIL',
-                'code review status: complete\n'
-                'blocking issue: unknown\n'
-                'failure type: code risk disagreement\n'
-                'remaining action: user decides whether to fix or re-examine once\n'
-                f'detail: main={normalized_result.status}, '
-                f'independent={independent_result.status}',
-            )
-
     emit(
         'PASS',
         f'normalized review passed: {normalized_result.status}; '
         f'tier={review_decision.tier}; '
-        f'independent={review_decision.tier == "L2" and normalized_result.status == "BLOCK"}',
+        'reviewer=subagent',
     )
 
 # Verify Read tool was used on at least one diff file
@@ -1118,7 +1095,7 @@ CITE_RE = re.compile(
 )
 
 cites: dict = {}
-for m in CITE_RE.finditer(joined_text):
+for m in CITE_RE.finditer(sub_joined_text):
     dim = int(m.group(1))
     cites[dim] = {
         'verdict': m.group(2),
@@ -1157,8 +1134,8 @@ SKIP_REJECT_PATTERNS = {
         # given|when|then are deliberately absent: they are BDD words, but they
         # are also plain English and shell syntax (`if ...; then`), so they
         # rejected honest SKIPPED verdicts on shell diffs — and since the
-        # independent reviewer also reports SKIPPED for a no-test diff, the two
-        # reports could never agree. Everything else in the list is unchanged.
+        # the isolated reviewer reports SKIPPED for a no-test diff, the report
+        # remains subject to the same conservative check.
         r'\b(test_|assert|mock|patch|unittest|pytest|expect|should|'
         r'fixture|setUp|tearDown)\b'
         r'|\bdef test_',
@@ -1196,74 +1173,7 @@ for dim, c in cites.items():
              f'D{dim} cite line {ln} is outside diff hunks for {fp}. '
              f'Modified lines (sample): {sample}.')
 
-# ===== Dual-reviewer gate =====
-# Large diffs require an independent reviewer subagent. Small diffs may use one
-# but don't have to. When a subagent IS present, its 7-dimension verdict must
-# agree with the main agent's per-dimension — disagreement means a real risk
-# was spotted by one and missed by the other.
-diff_added_lines = sum(
-    1 for line in diff_full.split('\n')
-    if line.startswith('+') and not line.startswith('+++')
-)
-diff_is_large = diff_added_lines > 30 or len(diff_files) > 2
-
-# Anchor sub-cite extraction to the LAST contiguous D1→D2→D3→D4→D5→D6 sequence.
-    # A subagent is told to emit exactly seven lines, but real outputs often contain
-# stray CITE_RE-shaped strings: CoT preamble (`先看 D1 ...`) before the block,
-# or FINDINGS bullets after the block that quote `D{N} VERDICT — file:line` as
-# discussion examples. A naive last-wins parse lets such strays override real
-# verdicts. Requiring strict 1,2,3,4,5,6 dim-order means stray cites that don't
-# form a complete in-order block are ignored. Multiple complete blocks → the
-# last one wins (re-emission is supported).
-sub_cites: dict = {}
-_seq: list = []  # in-progress 1..7 block being built
-for m in CITE_RE.finditer(sub_joined_text):
-    dim = int(m.group(1))
-    expected = len(_seq) + 1
-    if dim == expected:
-        _seq.append(m)
-        if len(_seq) == 7:
-            sub_cites = {
-                int(sm.group(1)): {
-                    'verdict': sm.group(2),
-                    'file': sm.group(3).replace('\\', '/'),
-                    'line': int(sm.group(4)),
-                    'reason': sm.group(5),
-                }
-                for sm in _seq
-            }
-            _seq = []
-    elif dim == 1:
-        # Stray match broke the sequence, but this match is itself a fresh D1
-        # so start a new attempt from here.
-        _seq = [m]
-    else:
-        _seq = []
-
-if diff_is_large and not sub_cites:
-    emit('FAIL',
-         f'diff is large ({diff_added_lines} added lines across '
-         f'{len(diff_files)} files); independent reviewer subagent is '
-         f'required. Spawn the Agent tool with prompt starting '
-         f'"{SUBAGENT_SIGNATURE}" — see SKILL.md Step 3.5.')
-
-if sub_cites:
-    sub_missing = [d for d in (1, 2, 3, 4, 5, 6, 7) if d not in sub_cites]
-    if sub_missing:
-        miss_list = ', '.join(f'D{d}' for d in sub_missing)
-        emit('FAIL',
-             f'independent reviewer subagent report is missing cites for '
-             f'{miss_list}. Subagent must emit all 7 dimensions in the same '
-             f'format as the main report.')
-    for dim in (1, 2, 3, 4, 5, 6, 7):
-        m_v = cites[dim]['verdict']
-        s_v = sub_cites[dim]['verdict']
-        if m_v != s_v:
-            emit('FAIL',
-                 f'D{dim} verdict mismatch: main={m_v}, independent={s_v}. '
-                 f'Reconcile (fix code or re-examine) and re-emit both reports.')
-
-emit('PASS', 'all 7 cites validated against diff hunks')
+emit('PASS', 'all 7 subagent cites validated against diff hunks')
 PYEOF
 )
 

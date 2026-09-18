@@ -37,9 +37,10 @@ The mechanical policy classifies the target diff:
 | L1 | Ordinary executable changes receive one bounded review |
 | L2 | Hook, permission, command, migration, lock, retry, task/target, and other high-risk changes receive focused review |
 
-Large line counts or file counts alone do not start an independent reviewer.
-For L2, an independent reviewer is used at most once and only after the main
-review returns `BLOCK`.
+Large line counts or file counts alone do not start a second reviewer.
+Every L1/L2 review runs once in a fresh-context subagent; the current session
+only coordinates the review and cannot self-approve from its conversation
+history.
 
 | Dimension | What |
 |---|---|
@@ -60,14 +61,14 @@ mandatory citations.
 1. `PreToolUse` hook intercepts every Bash tool call
 2. If the command contains `git push`, the hook resolves the target commit and the remote-tracking diff base
 3. The hook classifies the diff as L0/L1/L2 and creates a target-scoped review packet
-4. The hook reads the session transcript and verifies the selected profile's result and equivalent file-read evidence
+4. The hook reads the session transcript and verifies that a registered review subagent produced the selected profile's result and that equivalent file-read evidence exists
 5. Missing or invalid evidence blocks the push and asks you to choose: run the review, or abandon the push
 6. Every new target commit is checked against the remote-tracking base; if no base exists, the target is checked against the empty tree
 
 Protocol failures are reported as plugin protocol or environment problems,
 not silently labeled as code defects. A target commit cannot trigger an
-unbounded semantic-review loop; at most one protocol repair and one L2
-independent review are allowed.
+unbounded semantic-review loop; at most one protocol repair and one isolated
+review subagent are allowed.
 
 ### Why remote-tracking based?
 
