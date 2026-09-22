@@ -598,6 +598,7 @@ CODEX_REVIEW_TASK_RE = re.compile(
     r'^push_guard_(?:review|independent)(?:_[1-9][0-9]*)?$'
 )
 MULTI_AGENT_NAMESPACE = 'multi_agent_v1'
+CODEX_REVIEW_MODEL = 'gpt-5.6-luna'
 # How the harness wraps a peer/subagent message delivered to this session.
 PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
 # Some harness builds deliver a subagent's report neither as a tool_result (the
@@ -646,6 +647,7 @@ agent_ids: set = set()
 agent_names: set = set()
 codex_pending_agents: dict = {}
 codex_independent_agents: dict = {}
+invalid_codex_review_models: list = []
 
 def command_mentions_diff_read(cmd: str) -> set[str]:
     if not cmd:
@@ -672,6 +674,9 @@ def command_mentions_diff_read(cmd: str) -> set[str]:
 
 def is_codex_independent_task(task_name) -> bool:
     return isinstance(task_name, str) and bool(CODEX_REVIEW_TASK_RE.fullmatch(task_name))
+
+def codex_review_model_allowed(args: dict) -> bool:
+    return args.get('model') == CODEX_REVIEW_MODEL
 
 def has_reviewer_signature(args: dict) -> bool:
     """Check visible multi-agent arguments for the reviewer signature."""
@@ -903,17 +908,30 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
             cmd = args.get('cmd') or args.get('command') or ''
             for df in command_mentions_diff_read(cmd):
                 read_files.add(df)
-            legacy_review = (
+            legacy_review_candidate = (
                 name == 'spawn_agent'
                 and p.get('namespace') == 'collaboration'
                 and is_codex_independent_task(args.get('task_name'))
                 and args.get('fork_turns') == 'none'
             )
-            harness_independent = (
+            harness_independent_candidate = (
                 name == 'spawn_agent'
                 and p.get('namespace') == MULTI_AGENT_NAMESPACE
                 and args.get('fork_context') is False
                 and has_reviewer_signature(args)
+            )
+            if (
+                (legacy_review_candidate or harness_independent_candidate)
+                and not codex_review_model_allowed(args)
+            ):
+                invalid_codex_review_models.append(args.get('model'))
+            legacy_review = (
+                legacy_review_candidate
+                and codex_review_model_allowed(args)
+            )
+            harness_independent = (
+                harness_independent_candidate
+                and codex_review_model_allowed(args)
             )
             if legacy_review or harness_independent:
                 aid = p.get('call_id') or p.get('id')
@@ -963,6 +981,22 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                         sub_texts.append(content['text'])
 
 sub_joined_text = '\n'.join(sub_texts)
+
+if invalid_codex_review_models:
+    seen_models = []
+    for model in invalid_codex_review_models:
+        label = repr(model)
+        if label not in seen_models:
+            seen_models.append(label)
+    emit(
+        'FAIL',
+        'code review status: incomplete\n'
+        'blocking issue: unknown\n'
+        'failure type: push-guard protocol problem\n'
+        'remaining action: rerun one review with the required model; then stop\n'
+        f'detail: Codex Push-Guard review subagent must use '
+        f'{CODEX_REVIEW_MODEL}; got {", ".join(seen_models)}',
+    )
 
 # Every non-L0 review is performed by exactly one isolated subagent. The
 # parent session's text is deliberately not a review result: it may contain

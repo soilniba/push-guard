@@ -388,6 +388,8 @@ def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
                     {
                         "task_name": "push_guard_review",
                         "fork_turns": "none",
+                        "model": "gpt-5.6-luna",
+                        "reasoning_effort": "high",
                         "message": "[PUSH-GUARD-REVIEW v2]",
                     }
                 ),
@@ -434,6 +436,97 @@ def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
 
     assert hook_result.returncode == 0
     assert hook_result.stdout == ""
+
+
+def test_codex_review_rejects_non_luna_model_even_with_any_effort(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    transcript = tmp_path / "codex-wrong-model.jsonl"
+    events = [
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "input_text", "text": "push-guard:pre-push-review"}
+                ],
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps({"cmd": "Get-Content app.py"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call",
+                "name": "spawn_agent",
+                "namespace": "multi_agent_v1",
+                "call_id": "review-spawn",
+                "arguments": json.dumps(
+                    {
+                        "task_name": "push_guard_review",
+                        "fork_context": False,
+                        "model": "gpt-5.6-sol",
+                        "reasoning_effort": "max",
+                        "message": "[PUSH-GUARD-REVIEW v2]",
+                    }
+                ),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "review-spawn",
+                "output": json.dumps({"agent_id": "agent-wrong-model"}),
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "<subagent_notification>{"
+                            '"agent_path":"agent-wrong-model",'
+                            '"status":{"completed":"RESULT PASS\\nSEVERITY none\\nSUMMARY clean"}'
+                            "}</subagent_notification>"
+                        ),
+                    }
+                ],
+            },
+        },
+    ]
+    transcript.write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    hook_result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": "git push origin main"},
+            "transcript_path": str(transcript),
+        },
+    )
+
+    assert hook_result.returncode == 0
+    assert "gpt-5.6-luna" in hook_result.stdout
 
 
 def test_hook_matches_claude_and_codex_execution_tools():

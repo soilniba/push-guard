@@ -1,6 +1,6 @@
 ---
 name: pre-push-review
-description: Run only after the push-guard hook has blocked an unreviewed git push and the user has chosen to run the review. Use the manually selected profile and inspect only the target diff. Never start this review on your own initiative and never before a push attempt.
+description: Use when the user explicitly requests a Push-Guard review of pending git commits, or when the push-guard hook blocks an unreviewed push and the user chooses review. Inspect only the target diff with the manually selected profile.
 ---
 
 # Pre-Push Code Safety Review
@@ -10,8 +10,9 @@ description: Run only after the push-guard hook has blocked an unreviewed git pu
 ## Important: choose the protocol before reading the legacy checklist
 
 `PUSH_GUARD_PROFILE` is selected manually by the user or deployment
-configuration. The plugin never reads, guesses, or scores model capability.
-If it is not set, use `balanced`.
+configuration. The plugin never guesses or scores model capability. For Codex
+reviewer dispatch, it enforces the fixed model specified below. If the profile
+is not set, use `balanced`.
 
 - `fast` and `balanced` use the bounded `PASS/BLOCK/NOTE` protocol below.
 - `strict` uses the legacy seven-dimension protocol in the final section.
@@ -20,17 +21,28 @@ If it is not set, use `balanced`.
 - L0 is mechanical. Every L1/L2 review, regardless of profile, must be
   performed by one isolated review subagent. The current session is only the
   coordinator and must never self-review from its own conversation history.
+- For Codex, the isolated review subagent model is fixed to `gpt-5.6-luna`.
+  Do not use another model for background Push-Guard reviews.
 - Unless the profile is `strict`, ignore every section explicitly marked
   **strict-mode legacy**. Do not emit seven dimension lines in the default
   protocol.
 
 ## When to Use
 
-**The user decides first** — running this review is not automatic. On an unreviewed `git push` the hook blocks and hands the choice to the user: *run the review and push* or *abandon this push*. Ask the user and wait for the answer (Claude Code: `AskUserQuestion`; Codex: ask in your reply). Only the first choice leads here; on the second, stop and leave the commits local. Ask once per push: if the user already chose the review and the audit later fails for a technical reason, fix it and retry — do not ask again.
+**The user decides first** — running this review is not automatic. This skill starts through either of these explicit paths:
+
+1. **Direct request:** The user explicitly invokes `@Push-Guard` or clearly asks to review the pending commits before push. Start the review immediately; do not require a prior `git push` attempt or hook interception. Resolve the target from the current branch's upstream remote-tracking ref, then the remote default branch, then the empty tree when no base ref exists.
+2. **Hook request:** On an unreviewed `git push`, the hook blocks and hands the choice to the user: *run the review and push* or *abandon this push*. Ask the user and wait for the answer (Claude Code: `AskUserQuestion`; Codex: ask in your reply). Only the first choice leads here; on the second, stop and leave the commits local.
+
+Ask once per push in the hook-request path: if the user already chose the review and the audit later fails for a technical reason, fix it and retry — do not ask again.
 
 **Mandatory once chosen** — for any `git push` the hook blocks the push until
 this skill runs and emits a valid result for the selected profile. Declining
 the review can only end in an abandon, never in an unreviewed push.
+
+**Direct-request boundary:** A direct request authorizes this review only. It
+does not authorize `git push`, changing the target, or widening the diff. After
+the report is emitted, stop unless the user separately asks to push.
 
 ## Anti-Bypass Notice
 
@@ -86,8 +98,10 @@ verdicts and accepts only the report delivered by a registered subagent.
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type:
   "general-purpose"`.
-- **Codex:** invoke `multi_agent_v1` with `fork_context: false`; use the
-  reserved task name `push_guard_review` (or its numeric suffix if needed).
+- **Codex:** invoke `multi_agent_v1` with `fork_context: false`, model
+  `gpt-5.6-luna`, and an explicit reasoning effort; use the reserved task name
+  `push_guard_review` (or its numeric suffix if needed). This model choice is
+  mandatory and must not be replaced by an inherited or cheaper model.
 
 The prompt must start with this signature and include the packet's exact
 `target_sha`, `base_ref`, `review_profile`, `tier`, and high-priority files:
@@ -316,9 +330,11 @@ self-reviews.
 **How to spawn:**
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below. Copy it literally; the bracketed signature on the first line is mandatory.
-- **Codex:** invoke `multi_agent_v1` with `fork_context: false` and task name
+- **Codex:** invoke `multi_agent_v1` with `fork_context: false`, model
+  `gpt-5.6-luna`, an explicit reasoning effort, and task name
   `push_guard_review` (or its numeric suffix), using the same prompt below as
-  the message. The hook verifies this isolated spawn, its ACK, and the
+  the message. The model choice is mandatory. The hook verifies this isolated
+  spawn, its ACK, and the
   returning agent message as one chain.
 
 Use this review prompt:

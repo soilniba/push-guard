@@ -14,8 +14,9 @@ the manually selected `strict` profile.
 
 ## 手动审查档位
 
-The plugin never reads, guesses, or scores model capability. Select the review
-profile manually when the model or project risk changes:
+The plugin does not guess or score model capability. It enforces
+`gpt-5.6-luna` for Codex review subagents; select the review profile manually
+when the project risk changes:
 
 ```bash
 PUSH_GUARD_PROFILE=fast
