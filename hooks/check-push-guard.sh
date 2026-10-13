@@ -598,7 +598,7 @@ CODEX_REVIEW_TASK_RE = re.compile(
     r'^push_guard_(?:review|independent)(?:_[1-9][0-9]*)?$'
 )
 MULTI_AGENT_NAMESPACE = 'multi_agent_v1'
-CODEX_REVIEW_MODEL = 'gpt-5.6-luna'
+CODEX_REVIEW_MODEL_RE = re.compile(r'^gpt-[0-9]+(?:\.[0-9]+)?-luna$')
 # How the harness wraps a peer/subagent message delivered to this session.
 PEER_DELIVERY_RE = re.compile(r'teammate-message|Another Claude session sent a message:')
 # Some harness builds deliver a subagent's report neither as a tool_result (the
@@ -676,7 +676,8 @@ def is_codex_independent_task(task_name) -> bool:
     return isinstance(task_name, str) and bool(CODEX_REVIEW_TASK_RE.fullmatch(task_name))
 
 def codex_review_model_allowed(args: dict) -> bool:
-    return args.get('model') == CODEX_REVIEW_MODEL
+    model = args.get('model')
+    return isinstance(model, str) and bool(CODEX_REVIEW_MODEL_RE.fullmatch(model))
 
 def has_reviewer_signature(args: dict) -> bool:
     """Check visible multi-agent arguments for the reviewer signature."""
@@ -994,8 +995,8 @@ if invalid_codex_review_models:
         'blocking issue: unknown\n'
         'failure type: push-guard protocol problem\n'
         'remaining action: rerun one review with the required model; then stop\n'
-        f'detail: Codex Push-Guard review subagent must use '
-        f'{CODEX_REVIEW_MODEL}; got {", ".join(seen_models)}',
+        f'detail: Codex Push-Guard review subagent must use a Luna model '
+        f'(gpt-<version>-luna), choosing the latest available; got {", ".join(seen_models)}',
     )
 
 # Every non-L0 review is performed by exactly one isolated subagent. The

@@ -10,13 +10,15 @@ the manually selected `strict` profile.
 
 ## 文档
 
-设计、需求原文和开发记录见 [docs/README.md](docs/README.md)。
+设计、需求原文和开发记录见 [docs/README.md](docs/README.md)；当前修复见
+[Luna 家族与 Codex 审查兼容设计](docs/decisions/0006-latest-luna-codex-review.md)。
 
 ## 手动审查档位
 
-The plugin does not guess or score model capability. It enforces
-`gpt-5.6-luna` for Codex review subagents; select the review profile manually
-when the project risk changes:
+The plugin does not guess or score model capability. Codex review subagents
+must use the newest Luna model available in the runtime (`gpt-<version>-luna`),
+without pinning a numeric version. Select the review profile manually when the
+project risk changes:
 
 ```bash
 PUSH_GUARD_PROFILE=fast
@@ -102,7 +104,7 @@ codex plugin add push-guard@push-guard
 
 Codex loads plugin hooks from `hooks/hooks.json`. The hook reads both standard and
 `custom_tool_call` Codex transcript events, then blocks `git push` until
-`push-guard:pre-push-review` has emitted the required 7-dimension report.
+`push-guard:pre-push-review` has emitted the report required by the selected profile.
 
 ### Updating a local plugin checkout
 

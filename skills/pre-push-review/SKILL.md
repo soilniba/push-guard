@@ -11,7 +11,7 @@ description: Use when the user explicitly requests a Push-Guard review of pendin
 
 `PUSH_GUARD_PROFILE` is selected manually by the user or deployment
 configuration. The plugin never guesses or scores model capability. For Codex
-reviewer dispatch, it enforces the fixed model specified below. If the profile
+reviewer dispatch, it enforces the Luna family specified below. If the profile
 is not set, use `balanced`.
 
 - `fast` and `balanced` use the bounded `PASS/BLOCK/NOTE` protocol below.
@@ -21,8 +21,10 @@ is not set, use `balanced`.
 - L0 is mechanical. Every L1/L2 review, regardless of profile, must be
   performed by one isolated review subagent. The current session is only the
   coordinator and must never self-review from its own conversation history.
-- For Codex, the isolated review subagent model is fixed to `gpt-5.6-luna`.
-  Do not use another model for background Push-Guard reviews.
+- For Codex, use the newest model matching `gpt-<version>-luna` in the current
+  runtime's available model list. Compare numeric versions, not strings; never
+  invent an unavailable model or substitute a non-Luna model. If no Luna model
+  is available, report an environment problem and leave the push blocked.
 - Unless the profile is `strict`, ignore every section explicitly marked
   **strict-mode legacy**. Do not emit seven dimension lines in the default
   protocol.
@@ -65,7 +67,7 @@ not to eliminate every theoretical edge case. Do not block for unknown,
 extreme-environment, style, architecture-preference, or diff-unverifiable
 concerns. Put those in `NOTE`.
 
-### Step 1: Use the fixed review packet
+### Step 1: Use the target review packet
 
 Use the packet information shown by the plugin or generate the equivalent
 target-scoped packet:
@@ -98,10 +100,11 @@ verdicts and accepts only the report delivered by a registered subagent.
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type:
   "general-purpose"`.
-- **Codex:** invoke `multi_agent_v1` with `fork_context: false`, model
-  `gpt-5.6-luna`, and an explicit reasoning effort; use the reserved task name
-  `push_guard_review` (or its numeric suffix if needed). This model choice is
-  mandatory and must not be replaced by an inherited or cheaper model.
+- **Codex:** prefer `collaboration.spawn_agent` with `fork_turns: "none"`, the
+  newest available Luna model, and an explicit reasoning effort. Use the reserved
+  task name `push_guard_review` (or its numeric suffix if needed). On runtimes
+  exposing `multi_agent_v1.spawn_agent`, use its `fork_context: false` equivalent.
+  Do not inherit parent context or substitute a non-Luna model.
 
 The prompt must start with this signature and include the packet's exact
 `target_sha`, `base_ref`, `review_profile`, `tier`, and high-priority files:
@@ -330,10 +333,10 @@ self-reviews.
 **How to spawn:**
 
 - **Claude Code:** invoke the `Agent` tool with `subagent_type: "general-purpose"` and the prompt below. Copy it literally; the bracketed signature on the first line is mandatory.
-- **Codex:** invoke `multi_agent_v1` with `fork_context: false`, model
-  `gpt-5.6-luna`, an explicit reasoning effort, and task name
-  `push_guard_review` (or its numeric suffix), using the same prompt below as
-  the message. The model choice is mandatory. The hook verifies this isolated
+- **Codex:** prefer `collaboration.spawn_agent` with `fork_turns: "none"`, the
+  newest available Luna model, an explicit reasoning effort, and task name
+  `push_guard_review` (or its numeric suffix). On older runtimes use
+  `multi_agent_v1.spawn_agent` with `fork_context: false`. The hook verifies this isolated
   spawn, its ACK, and the
   returning agent message as one chain.
 

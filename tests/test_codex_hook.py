@@ -22,7 +22,7 @@ CLAUDE_MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 FIXTURE_DIR = ROOT / "tests" / "fixtures"
 
 
-def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
+def _bash_executable() -> str:
     bash = shutil.which("bash")
     if os.name == "nt":
         windows_git_bash = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
@@ -30,21 +30,15 @@ def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
             bash = str(windows_git_bash)
     if not bash:
         raise RuntimeError("bash is required to run hook regression tests")
-    env = os.environ.copy()
-    env["PLUGIN_ROOT"] = str(ROOT)
-    env["PUSH_GUARD_PROFILE"] = "balanced"
-    return subprocess.run(
-        [bash, "hooks/check-push-guard.sh"],
-        cwd=ROOT,
-        input=json.dumps(payload),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-        timeout=30,
-        env=env,
-    )
+    return bash
+
+
+def _run_hook(payload: dict) -> subprocess.CompletedProcess[str]:
+    return _run_hook_in_repo(ROOT, payload)
+
+
+def _push_command(repo: Path) -> str:
+    return f"git -C {shlex.quote(str(repo))} push origin main"
 
 
 def _run_hook_in_repo(
@@ -52,14 +46,12 @@ def _run_hook_in_repo(
     payload: dict,
     profile: str = "balanced",
 ) -> subprocess.CompletedProcess[str]:
-    bash = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
-    if not bash.exists():
-        raise RuntimeError("Git Bash is required to run hook regression tests")
+    bash = _bash_executable()
     env = os.environ.copy()
     env["PLUGIN_ROOT"] = str(ROOT)
     env["PUSH_GUARD_PROFILE"] = profile
     return subprocess.run(
-        [str(bash), str(HOOK_SCRIPT)],
+        [bash, str(HOOK_SCRIPT)],
         cwd=repo,
         input=json.dumps(payload),
         text=True,
@@ -229,20 +221,23 @@ def _write_subagent_review_transcript(
 
 
 def _run_fixture(name: str, tmp_path: Path, read_file: str | None = None):
+    repo = _make_unpushed_repo(tmp_path)
     fixture = (FIXTURE_DIR / name).read_text(encoding="utf-8")
     fixture = fixture.replace(
         "__TIMESTAMP__",
         datetime.now(timezone.utc).isoformat(),
     )
     if read_file is None:
-        read_file = str(ROOT / "hooks" / "review_policy.py")
+        read_file = str(repo / "app.py")
     fixture = fixture.replace("__READ_FILE__", read_file.replace("\\", "/"))
+    fixture = fixture.replace("gpt-5.6-luna", "gpt-6-luna")
     transcript = tmp_path / name
     transcript.write_text(fixture, encoding="utf-8")
-    return _run_hook(
+    return _run_hook_in_repo(
+        repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         }
     )
@@ -286,7 +281,7 @@ def test_model_review_requires_a_registered_subagent_for_every_profile(
         repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         },
         profile=profile,
@@ -309,7 +304,7 @@ def test_registered_subagent_result_is_the_l1_review_authority(tmp_path):
         repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         },
     )
@@ -341,7 +336,7 @@ def test_registered_subagent_result_is_the_strict_review_authority(tmp_path):
         repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         },
         profile="strict",
@@ -388,7 +383,7 @@ def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
                     {
                         "task_name": "push_guard_review",
                         "fork_turns": "none",
-                        "model": "gpt-5.6-luna",
+                        "model": "gpt-6-luna",
                         "reasoning_effort": "high",
                         "message": "[PUSH-GUARD-REVIEW v2]",
                     }
@@ -520,13 +515,15 @@ def test_codex_review_rejects_non_luna_model_even_with_any_effort(tmp_path):
         repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         },
     )
 
     assert hook_result.returncode == 0
-    assert "gpt-5.6-luna" in hook_result.stdout
+    assert '"permissionDecision": "deny"' in hook_result.stdout
+    assert "gpt-5.6-sol" in hook_result.stdout
+    assert "Luna" in hook_result.stdout or "luna" in hook_result.stdout
 
 
 def test_hook_matches_claude_and_codex_execution_tools():
@@ -543,7 +540,7 @@ def test_hook_matches_claude_and_codex_execution_tools():
     assert matcher.search("functions.exec_command")
 
 
-def test_plugin_release_version_refreshes_client_hook_cache():
+def test_plugin_release_versions_share_the_codex_build_release():
     codex_manifest = json.loads(CODEX_MANIFEST.read_text(encoding="utf-8"))
     other_manifests = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -554,8 +551,10 @@ def test_plugin_release_version_refreshes_client_hook_cache():
         for path in (CODEX_MARKETPLACE, CLAUDE_MARKETPLACE)
     ]
 
-    assert codex_manifest["version"].startswith("1.9.1+codex.")
-    assert {manifest["version"] for manifest in other_manifests} == {"1.9.1"}
+    release, separator, build = codex_manifest["version"].partition("+codex.")
+    assert re.fullmatch(r"\d+\.\d+\.\d+", release)
+    assert separator and build.isdigit()
+    assert {manifest["version"] for manifest in other_manifests} == {release}
     assert all(
         "version" not in marketplace["plugins"][0]
         for marketplace in marketplaces
@@ -660,15 +659,16 @@ def test_launcher_keeps_environment_assignment_git_push_on_the_review_path():
     )
 
 
-def test_windows_launcher_blocks_push_without_wsl_bash():
+def test_launcher_blocks_unreviewed_push(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
     launcher = ROOT / "hooks" / "run_push_guard.py"
     result = subprocess.run(
         [os.fspath(Path(os.sys.executable)), os.fspath(launcher)],
-        cwd=ROOT,
+        cwd=repo,
         input=json.dumps(
             {
                 "tool_name": "functions.exec_command",
-                "tool_input": {"cmd": "git push origin main"},
+                "tool_input": {"cmd": _push_command(repo)},
                 "transcript_path": "",
             }
         ),
@@ -696,11 +696,13 @@ def test_codex_cmd_field_does_not_fail_closed_on_prose_containing_git_push():
     assert result.stdout == ""
 
 
-def test_codex_cmd_field_still_blocks_an_actual_push():
-    result = _run_hook(
+def test_codex_cmd_field_still_blocks_an_actual_push(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    result = _run_hook_in_repo(
+        repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": "",
         }
     )
@@ -724,11 +726,13 @@ def test_environment_assignment_before_git_push_is_blocked(tmp_path):
     assert '"permissionDecision": "deny"' in result.stdout
 
 
-def test_bash_command_field_still_blocks_an_actual_push():
-    result = _run_hook(
+def test_bash_command_field_still_blocks_an_actual_push(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
+    result = _run_hook_in_repo(
+        repo,
         {
             "tool_name": "Bash",
-            "tool_input": {"command": "git push origin main"},
+            "tool_input": {"command": _push_command(repo)},
             "transcript_path": "",
         }
     )
@@ -776,6 +780,11 @@ def test_codex_fixture_accepts_get_content_as_read_evidence(tmp_path):
 def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
     tmp_path,
 ):
+    repo = _make_unpushed_repo(tmp_path)
+    (repo / "hooks").mkdir()
+    (repo / "hooks" / "review_policy.py").write_text("allow = False\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "hooks/review_policy.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "权限策略"], check=True)
     timestamp = datetime.now(timezone.utc).isoformat()
     events = [
         {
@@ -800,7 +809,7 @@ def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
                         "type": "tool_use",
                         "name": "Read",
                         "input": {
-                            "file_path": str(ROOT / "hooks" / "review_policy.py")
+                            "file_path": str(repo / "hooks" / "review_policy.py")
                         },
                     }
                 ]
@@ -847,10 +856,11 @@ def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
         "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in events),
         encoding="utf-8",
     )
-    result = _run_hook(
+    result = _run_hook_in_repo(
+        repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         }
     )
@@ -860,23 +870,25 @@ def test_unregistered_assistant_text_cannot_satisfy_l2_independent_review(
 
 
 def test_result_for_another_target_sha_is_rejected(tmp_path):
+    repo = _make_unpushed_repo(tmp_path)
     fixture = (FIXTURE_DIR / "claude_transcript.jsonl").read_text(encoding="utf-8")
     fixture = fixture.replace(
         "__TIMESTAMP__",
         datetime.now(timezone.utc).isoformat(),
     ).replace(
         "__READ_FILE__",
-        str(ROOT / "hooks" / "review_policy.py").replace("\\", "/"),
+        str(repo / "app.py").replace("\\", "/"),
     ).replace(
         "RESULT PASS\\nSEVERITY none",
         "RESULT PASS\\nTARGET_SHA deadbeef\\nSEVERITY none",
     )
     transcript = tmp_path / "wrong-target.jsonl"
     transcript.write_text(fixture, encoding="utf-8")
-    result = _run_hook(
+    result = _run_hook_in_repo(
+        repo,
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {"cmd": _push_command(repo)},
             "transcript_path": str(transcript),
         }
     )
@@ -910,11 +922,7 @@ def test_docs_only_push_does_not_require_a_transcript(tmp_path):
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(repo), "push", "-qu", "origin", "main"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "fetch", "-q", "origin", "main"],
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
         check=True,
     )
     (repo / "docs").mkdir()
@@ -925,24 +933,13 @@ def test_docs_only_push_does_not_require_a_transcript(tmp_path):
         check=True,
     )
 
-    env = os.environ.copy()
-    env["PUSH_GUARD_PROFILE"] = "balanced"
-    bash = Path(r"C:\Program Files\Git\usr\bin\bash.exe")
-    result = subprocess.run(
-        [str(bash), str(HOOK_SCRIPT)],
-        cwd=repo,
-        input=json.dumps(
-            {
-                "tool_name": "functions.exec_command",
-                "tool_input": {"cmd": "git push origin main"},
-                "transcript_path": "",
-            }
-        ),
-        text=True,
-        capture_output=True,
-        check=False,
-        env=env,
-        timeout=30,
+    result = _run_hook_in_repo(
+        repo,
+        {
+            "tool_name": "functions.exec_command",
+            "tool_input": {"cmd": _push_command(repo)},
+            "transcript_path": "",
+        },
     )
 
     assert result.returncode == 0
