@@ -1,6 +1,6 @@
 {
   "name": "push-guard",
-  "version": "1.9.2+codex.20261013033512",
+  "version": "1.9.3+codex.20261013072000",
   "description": "Bounded pre-push code safety review skill and hook for Codex and Claude Code.",
   "author": {
     "name": "soilniba"

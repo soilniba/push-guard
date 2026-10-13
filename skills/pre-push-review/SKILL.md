@@ -98,6 +98,12 @@ deciding the result. Do not review the diff yourself and do not emit a
 `RESULT` line in the coordinator session. The hook ignores coordinator
 verdicts and accepts only the report delivered by a registered subagent.
 
+On Codex, read this skill with an actual `cat`, `sed`, or equivalent reader
+command; a prose announcement alone is only a compatibility fallback. For
+multiple repositories, include the exact `TARGET_SHA` in every subagent report
+so their authenticated reviews remain separate. Re-reading the skill does not
+authorize another semantic review of the same target.
+
 - **Claude Code:** invoke the `Agent` tool with `subagent_type:
   "general-purpose"`.
 - **Codex:** prefer `collaboration.spawn_agent` with `fork_turns: "none"`, the

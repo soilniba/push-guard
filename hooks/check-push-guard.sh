@@ -242,7 +242,7 @@ fi
 AUDIT_OUTPUT=$(HOOK_INPUT="$HOOK_INPUT" TARGET_SHA="$TARGET_SHA" GIT_C_PATH="$GIT_C_PATH" \
     LOCAL_REF="$LOCAL_REF" PUSH_REMOTE="$PUSH_REMOTE" PUSH_DEST="$PUSH_DEST" \
     PYTHONIOENCODING=utf-8 "$PYTHON_BIN" <<'PYEOF'
-import os, json, re, glob, subprocess, sys
+import os, json, re, glob, shlex, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -518,6 +518,7 @@ SKILL_NAME = 'push-guard:pre-push-review'
 skill_idx = None
 skill_tool_idx = None  # a real Skill tool call — the authoritative invocation
 skill_text_idx = None  # a prose mention — fallback only, see below
+skill_read_idx = None  # earliest actual Codex skill read since this target
 skill_tool_count = 0
 skill_text_count = 0
 
@@ -550,6 +551,169 @@ def codex_payload(e: dict) -> dict:
     p = e.get('payload')
     return p if isinstance(p, dict) else {}
 
+def command_reads_skill(command: str) -> bool:
+    """Recognize a real reader command, never echo or text inside a JS string."""
+    try:
+        words = shlex.split(command, comments=True)
+    except (TypeError, ValueError):
+        return False
+    if not words or words[0] not in {'cat', 'sed', 'head', 'tail', 'Get-Content'}:
+        return False
+    return any(
+        (
+            word.replace('\\', '/').endswith('/skills/pre-push-review/SKILL.md')
+            or word.replace('\\', '/') == 'skills/pre-push-review/SKILL.md'
+        )
+        and (Path(word).is_file() or (Path(push_guard_root) / word).is_file())
+        for word in words[1:]
+    )
+
+def code_marker_positions(source: str, marker: str):
+    """Yield marker positions outside simple JavaScript strings/comments."""
+    index = 0
+    quote = None
+    while index < len(source):
+        char = source[index]
+        if quote:
+            if char == '\\':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if source.startswith('//', index):
+            newline = source.find('\n', index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith('/*', index):
+            end = source.find('*/', index + 2)
+            index = len(source) if end < 0 else end + 2
+            continue
+        if char in ("'", '"', '`'):
+            quote = char
+            index += 1
+            continue
+        if source.startswith(marker, index):
+            before = source[index - 1] if index else ''
+            after = index + len(marker)
+            next_char = source[after] if after < len(source) else ''
+            if (
+                (not before or not (before.isalnum() or before in '_$.'))
+                and (not next_char or next_char.isspace() or next_char == '(')
+            ):
+                yield index
+            index = after
+            continue
+        index += 1
+
+def custom_tool_commands(payload: dict) -> list[str]:
+    """Extract direct string command arguments from Codex's JS exec wrapper."""
+    if payload.get('name') != 'exec' or payload.get('status') != 'completed':
+        return []
+    source = payload.get('input')
+    if not isinstance(source, str):
+        return []
+
+    def object_string_property(start: int) -> str | None:
+        """Read a top-level cmd/command string from a JS object literal."""
+        if start >= len(source) or source[start] != '{':
+            return None
+        index = start + 1
+        brace_depth = 1
+        bracket_depth = 0
+        paren_depth = 0
+        while index < len(source) and brace_depth:
+            char = source[index]
+            if char in ('"', "'", '`'):
+                quote = char
+                string_start = index
+                index += 1
+                while index < len(source):
+                    if source[index] == '\\':
+                        index += 2
+                    elif source[index] == quote:
+                        index += 1
+                        break
+                    else:
+                        index += 1
+                else:
+                    return None
+                if brace_depth == 1 and bracket_depth == 0 and paren_depth == 0:
+                    try:
+                        key = json.loads(source[string_start:index]) if quote == '"' else None
+                    except json.JSONDecodeError:
+                        key = None
+                    if key in ('cmd', 'command'):
+                        cursor = index
+                        while cursor < len(source) and source[cursor].isspace():
+                            cursor += 1
+                        if cursor < len(source) and source[cursor] == ':':
+                            cursor += 1
+                            while cursor < len(source) and source[cursor].isspace():
+                                cursor += 1
+                            if cursor < len(source) and source[cursor] == '"':
+                                try:
+                                    command, _ = json.JSONDecoder().raw_decode(source, cursor)
+                                except json.JSONDecodeError:
+                                    return None
+                                return command if isinstance(command, str) else None
+                continue
+            if source.startswith('//', index):
+                newline = source.find('\n', index + 2)
+                index = len(source) if newline < 0 else newline + 1
+                continue
+            if source.startswith('/*', index):
+                end = source.find('*/', index + 2)
+                index = len(source) if end < 0 else end + 2
+                continue
+            if brace_depth == 1 and bracket_depth == 0 and paren_depth == 0:
+                match = re.match(r'[A-Za-z_$][A-Za-z0-9_$]*', source[index:])
+                if match and match.group(0) in ('cmd', 'command'):
+                    cursor = index + len(match.group(0))
+                    while cursor < len(source) and source[cursor].isspace():
+                        cursor += 1
+                    if cursor < len(source) and source[cursor] == ':':
+                        cursor += 1
+                        while cursor < len(source) and source[cursor].isspace():
+                            cursor += 1
+                        if cursor < len(source) and source[cursor] == '"':
+                            try:
+                                command, _ = json.JSONDecoder().raw_decode(source, cursor)
+                            except json.JSONDecodeError:
+                                return None
+                            return command if isinstance(command, str) else None
+            if char == '{':
+                brace_depth += 1
+            elif char == '}':
+                brace_depth -= 1
+            elif char == '[':
+                bracket_depth += 1
+            elif char == ']':
+                bracket_depth = max(0, bracket_depth - 1)
+            elif char == '(':
+                paren_depth += 1
+            elif char == ')':
+                paren_depth = max(0, paren_depth - 1)
+            index += 1
+        return None
+
+    commands = []
+    marker = 'tools.exec_command'
+    for call_start in code_marker_positions(source, marker):
+        open_paren = call_start + len(marker)
+        while open_paren < len(source) and source[open_paren].isspace():
+            open_paren += 1
+        if open_paren >= len(source) or source[open_paren] != '(':
+            continue
+        argument_start = open_paren + 1
+        while argument_start < len(source) and source[argument_start].isspace():
+            argument_start += 1
+        command = object_string_property(argument_start)
+        if command is not None:
+            commands.append(command)
+    return commands
+
 for i, e in enumerate(events):
     if event_time(e) < head_time:
         continue
@@ -568,6 +732,14 @@ for i, e in enumerate(events):
                 skill_text_count += 1
     elif e.get('type') == 'response_item':
         p = codex_payload(e)
+        commands = []
+        if p.get('type') == 'function_call' and p.get('name') == 'exec_command':
+            args = parse_arguments(p.get('arguments'))
+            commands = [args.get('cmd') or args.get('command') or '']
+        elif p.get('type') == 'custom_tool_call':
+            commands = custom_tool_commands(p)
+        if skill_read_idx is None and any(command_reads_skill(cmd) for cmd in commands):
+            skill_read_idx = i
         if p.get('type') == 'message' and p.get('role') == 'assistant':
             if any(SKILL_NAME in t for t in text_parts(p.get('content'))):
                 skill_text_idx = i
@@ -577,7 +749,11 @@ for i, e in enumerate(events):
 # invocation: the announcement, a report or a summary naming the skill must not
 # move the window forward, or a Read (and the report) that came before the
 # mention fall outside it and a correct review gets rejected.
-skill_idx = skill_tool_idx if skill_tool_idx is not None else skill_text_idx
+skill_idx = (
+    skill_tool_idx if skill_tool_idx is not None
+    else skill_read_idx if skill_read_idx is not None
+    else skill_text_idx
+)
 
 if skill_idx is None:
     emit('FAIL',
@@ -647,6 +823,7 @@ agent_ids: set = set()
 agent_names: set = set()
 codex_pending_agents: dict = {}
 codex_independent_agents: dict = {}
+codex_agent_reports: dict = {}
 invalid_codex_review_models: list = []
 
 def command_mentions_diff_read(cmd: str) -> set[str]:
@@ -720,83 +897,15 @@ def notification_report(raw: str) -> str:
         return ''
     status = payload.get('status')
     if isinstance(status, str):
+        codex_agent_reports.setdefault(agent_path, []).append(status)
         return status
     if isinstance(status, dict):
         for key in ('completed', 'result', 'message'):
             report = status.get(key)
             if isinstance(report, str):
+                codex_agent_reports.setdefault(agent_path, []).append(report)
                 return report
     return ''
-
-def code_marker_positions(source: str, marker: str):
-    """Yield marker positions outside simple JavaScript strings/comments."""
-    index = 0
-    quote = None
-    while index < len(source):
-        char = source[index]
-        if quote:
-            if char == '\\':
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if source.startswith('//', index):
-            newline = source.find('\n', index + 2)
-            index = len(source) if newline < 0 else newline + 1
-            continue
-        if source.startswith('/*', index):
-            end = source.find('*/', index + 2)
-            index = len(source) if end < 0 else end + 2
-            continue
-        if char in ("'", '"', '`'):
-            quote = char
-            index += 1
-            continue
-        if source.startswith(marker, index):
-            before = source[index - 1] if index else ''
-            after = index + len(marker)
-            next_char = source[after] if after < len(source) else ''
-            if (
-                (not before or not (before.isalnum() or before in '_$.'))
-                and (not next_char or next_char.isspace() or next_char == '(')
-            ):
-                yield index
-            index = after
-            continue
-        index += 1
-
-def custom_tool_commands(payload: dict) -> list[str]:
-    """Extract literal cmd values from Codex's nested exec wrapper source."""
-    if payload.get('name') != 'exec' or payload.get('status') != 'completed':
-        return []
-    source = payload.get('input')
-    if not isinstance(source, str):
-        return []
-
-    commands = []
-    marker = 'tools.exec_command'
-    decoder = json.JSONDecoder()
-    for call_start in code_marker_positions(source, marker):
-        open_paren = call_start + len(marker)
-        while open_paren < len(source) and source[open_paren].isspace():
-            open_paren += 1
-        if open_paren >= len(source) or source[open_paren] != '(':
-            continue
-        argument_start = open_paren + 1
-        while argument_start < len(source) and source[argument_start].isspace():
-            argument_start += 1
-        try:
-            args, argument_end = decoder.raw_decode(source, argument_start)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(args, dict) or not source[argument_end:].lstrip().startswith(')'):
-            continue
-        command = args.get('cmd') or args.get('command') or ''
-        if isinstance(command, str):
-            commands.append(command)
-    return commands
 
 # The window starts AT the invocation, inclusive: the assistant message that
 # carries the Skill call is the same message that often carries the report, and
@@ -980,6 +1089,7 @@ for i, e in enumerate(events[skill_idx:], skill_idx):
                         and isinstance(content.get('text'), str)
                     ):
                         sub_texts.append(content['text'])
+                        codex_agent_reports.setdefault(author, []).append(content['text'])
 
 sub_joined_text = '\n'.join(sub_texts)
 
@@ -1008,6 +1118,29 @@ reviewer_count = max(
     len(codex_pending_agents),
     len(codex_independent_agents),
 )
+if len(codex_pending_agents) > 1 and review_decision.profile != 'strict':
+    # The harness authenticates each author before grouping independent reviews
+    # by commit. Foreign-target reports never become this target's verdict.
+    if len(codex_pending_agents) != len(codex_independent_agents):
+        emit('FAIL', 'push-guard protocol problem: registered review subagent ACK missing')
+    selected_reports = []
+    for author in codex_independent_agents:
+        reports = list(dict.fromkeys(codex_agent_reports.get(author, [])))
+        text = '\n'.join(reports)
+        try:
+            result = parse_review_result(text, profile=review_decision.profile)
+        except Exception:
+            emit('FAIL', 'push-guard protocol problem: registered review subagent report missing or malformed')
+        if not result.target_sha:
+            emit('FAIL', 'push-guard protocol problem: multi-target reports require TARGET_SHA')
+        if result.target_sha == target_sha:
+            selected_reports.append(text)
+    reviewer_count = max(
+        len(agent_ids - set(codex_independent_agents)),
+        len(agent_names),
+        len(selected_reports),
+    )
+    sub_joined_text = '\n'.join(selected_reports)
 if reviewer_count == 0:
     emit(
         'FAIL',
@@ -1061,7 +1194,7 @@ if review_decision.profile != 'strict':
         if skill_tool_count
         else skill_text_count
     )
-    if skill_invocations > 1:
+    if skill_invocations > 1 and skill_read_idx is None:
         review_state = ReviewState(
             target_sha,
             semantic_review_done=True,
@@ -1102,6 +1235,13 @@ if review_decision.profile != 'strict':
             'remaining action: repair the finding format once; then stop\n'
             f'detail: {normalized_validation.reason}',
         )
+
+    if normalized_result.status == 'BLOCK':
+        details = '\n'.join(
+            f'{finding.file}:{finding.line}: {finding.reason}'
+            for finding in normalized_result.findings
+        )
+        emit('FAIL', 'code review status: complete\nblocking issue: true\nRESULT BLOCK\n' + details)
 
     emit(
         'PASS',

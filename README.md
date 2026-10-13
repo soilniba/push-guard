@@ -12,6 +12,7 @@ the manually selected `strict` profile.
 
 设计、需求原文和开发记录见 [docs/README.md](docs/README.md)；当前修复见
 [Luna 家族与 Codex 审查兼容设计](docs/decisions/0006-latest-luna-codex-review.md)。
+实际推送门禁兼容修复见 [多仓库审查证明](docs/decisions/0007-codex-target-scoped-review-proof.md)。
 
 ## 手动审查档位
 

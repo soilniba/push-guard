@@ -346,7 +346,26 @@ def test_registered_subagent_result_is_the_strict_review_authority(tmp_path):
     assert hook_result.stdout == ""
 
 
-def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
+@pytest.mark.parametrize(
+    ("exec_input", "accepted"),
+    [
+        (
+            'const r = await tools.exec_command('
+            '{cmd:"sed -n \'1,20p\' app.py",workdir:"/tmp/repo"}); '
+            'text(r.output);',
+            True,
+        ),
+        (
+            'const r = await tools.exec_command('
+            '{cmd:"echo ok", /* sed -n \'1,20p\' app.py */ '
+            'workdir:"/tmp/repo"}); text(r.output);',
+            False,
+        ),
+    ],
+)
+def test_codex_nested_exec_read_evidence_is_extracted_safely(
+    tmp_path, exec_input, accepted
+):
     repo = _make_unpushed_repo(tmp_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     transcript = tmp_path / "codex-subagent-review.jsonl"
@@ -366,9 +385,10 @@ def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
             "type": "response_item",
             "timestamp": timestamp,
             "payload": {
-                "type": "function_call",
-                "name": "exec_command",
-                "arguments": json.dumps({"cmd": "Get-Content app.py"}),
+                "type": "custom_tool_call",
+                "name": "exec",
+                "status": "completed",
+                "input": exec_input,
             },
         },
         {
@@ -420,17 +440,21 @@ def test_codex_review_result_must_arrive_from_registered_subagent(tmp_path):
         encoding="utf-8",
     )
 
-    hook_result = _run_hook_in_repo(
-        repo,
+    hook_result = _run_hook(
         {
             "tool_name": "functions.exec_command",
-            "tool_input": {"cmd": "git push origin main"},
+            "tool_input": {
+                "cmd": f"git -C {shlex.quote(str(repo))} push origin main"
+            },
             "transcript_path": str(transcript),
-        },
+        }
     )
 
     assert hook_result.returncode == 0
-    assert hook_result.stdout == ""
+    if accepted:
+        assert hook_result.stdout == ""
+    else:
+        assert "no equivalent read evidence" in hook_result.stdout
 
 
 def test_codex_review_rejects_non_luna_model_even_with_any_effort(tmp_path):
